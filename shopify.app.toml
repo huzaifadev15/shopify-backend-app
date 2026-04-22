@@ -1,0 +1,18 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "c7cfadd499c03a1471392d360a91b498"
+name = "patches"
+application_url = "https://unfaulty-untwirled-aleisha.ngrok-free.dev"
+embedded = true
+
+[webhooks]
+api_version = "2026-04"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_price_rules,write_price_rules,read_discounts,write_discounts,read_cart_transforms,write_cart_transforms,read_product_feeds,write_product_feeds,read_product_listings,write_product_listings,read_products,write_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ ]

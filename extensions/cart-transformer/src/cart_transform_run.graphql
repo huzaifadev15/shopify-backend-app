@@ -1,0 +1,20 @@
+query CartTransformRunInput {
+  cart {
+    lines {
+      id
+      quantity
+      attribute(key: "custom_price") {
+        value
+      }
+      customPriceCamel: attribute(key: "customPrice") {
+        value
+      }
+      calculatedUnitPrice: attribute(key: "Calculated Unit Price") {
+        value
+      }
+      calculatedTotal: attribute(key: "Calculated Total") {
+        value
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+query CartInput {
+  cart {
+    lines {
+      id
+      quantity
+      attribute(key: "custom_price") {
+        value
+      }
+      cost {
+        subtotalAmount {
+          amount
+        }
+      }
+    }
+  }
+  discount {
+    discountClasses
+  }
+}
