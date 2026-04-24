@@ -103,9 +103,8 @@ async function fetchFalStatus(modelPath, requestId) {
   const response = await fetchWithTimeout(
     `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
     {
-      method: "POST",
-      headers: getFalHeaders(),
-      body: JSON.stringify({})
+      method: "GET",           // ← correct
+      headers: getFalHeaders()
     }
   );
   const payload = await readJsonSafely(response);
@@ -116,9 +115,8 @@ async function fetchFalResult(modelPath, requestId) {
   const response = await fetchWithTimeout(
     `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
     {
-      method: "POST",
-      headers: getFalHeaders(),
-      body: JSON.stringify({})
+      method: "GET",           // ← correct
+      headers: getFalHeaders()
     }
   );
   const payload = await readJsonSafely(response);
