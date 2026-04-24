@@ -6,16 +6,21 @@ import { signQuote } from "./token.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-const defaultCorsOrigin = process.env.STOREFRONT_ORIGIN || (process.env.SHOPIFY_SHOP_DOMAIN ? `https://${normalizeShopDomain(process.env.SHOPIFY_SHOP_DOMAIN)}` : "");
-const allowedOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigin)
+const defaultCorsOrigin = process.env.STOREFRONT_ORIGIN || (process.env.SHOPIFY_SHOP_DOMAIN ? `https://${normalizeShopDomain(process.env.SHOPIFY_SHOP_DOMAIN)}` : "https://fineystpatches.myshopify.com/");
+const corsOriginSetting = process.env.CORS_ORIGIN || defaultCorsOrigin;
+const allowAllOrigins = corsOriginSetting
+  .split(",")
+  .map((item) => item.trim())
+  .some((origin) => origin === "*");
+const allowedOrigins = corsOriginSetting
   .split(",")
   .map((item) => item.trim())
   .filter(Boolean)
-  .filter((origin) => !origin.includes("*"));
+  .filter((origin) => origin !== "*");
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (!origin || allowAllOrigins || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error("Not allowed by CORS"));
