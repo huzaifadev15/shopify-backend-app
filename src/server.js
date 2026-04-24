@@ -42,8 +42,11 @@ const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
 const AI_AWAIT_TIMEOUT_MS = Number(process.env.AI_AWAIT_TIMEOUT_MS || 45_000);
 const AI_AWAIT_POLL_MS = Number(process.env.AI_AWAIT_POLL_MS || 1500);
+const AI_STATUS_MIN_POLL_MS = Number(process.env.AI_STATUS_MIN_POLL_MS || 1500);
 const aiRequestMeta = new Map();
 const aiRateLimitByIp = new Map();
+const aiStatusCache = new Map();
+const aiStatusLastPollByKey = new Map();
 
 let pricingCache = null;
 
@@ -179,6 +182,10 @@ function enforceAiRateLimit(req, res) {
     return false;
   }
   return true;
+}
+
+function getRequesterKey(req) {
+  return String(req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown");
 }
 
 const SHOP_DOMAIN = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
@@ -659,6 +666,18 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
     const modelPath = buildFalModelPath(meta.provider, meta.model);
+    const requesterKey = getRequesterKey(req);
+    const pollKey = `${requesterKey}:${requestId}`;
+    const now = Date.now();
+    const lastPollAt = aiStatusLastPollByKey.get(pollKey) || 0;
+    const cached = aiStatusCache.get(requestId);
+    if (now - lastPollAt < AI_STATUS_MIN_POLL_MS) {
+      if (cached) {
+        return res.json(cached);
+      }
+      return res.json({ status: "processing" });
+    }
+    aiStatusLastPollByKey.set(pollKey, now);
     const waitForCompletion = req.query.wait === "1" || req.query.wait === "true";
     if (waitForCompletion) {
       const finalState = await waitForFalCompletion({
@@ -666,18 +685,24 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
         requestId
       });
       if (finalState.status === "completed") {
-        return res.json({
+        const payload = {
           status: "completed",
           images: finalState.images
-        });
+        };
+        aiStatusCache.set(requestId, payload);
+        return res.json(payload);
       }
       if (finalState.status === "failed") {
-        return res.json({
+        const payload = {
           status: "failed",
           error: finalState.error
-        });
+        };
+        aiStatusCache.set(requestId, payload);
+        return res.json(payload);
       }
-      return res.json({ status: "processing" });
+      const payload = { status: "processing" };
+      aiStatusCache.set(requestId, payload);
+      return res.json(payload);
     }
 
     const { response, payload } = await fetchFalStatus(modelPath, requestId);
@@ -703,20 +728,26 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
       const images = (resultPayload?.images || [])
         .map((item) => ({ url: item?.url }))
         .filter((item) => Boolean(item.url));
-      return res.json({
+      const responsePayload = {
         status: "completed",
         images
-      });
+      };
+      aiStatusCache.set(requestId, responsePayload);
+      return res.json(responsePayload);
     }
 
     if (status === "failed") {
-      return res.json({
+      const responsePayload = {
         status: "failed",
         error: payload?.error || payload?.message || "Image generation failed."
-      });
+      };
+      aiStatusCache.set(requestId, responsePayload);
+      return res.json(responsePayload);
     }
 
-    return res.json({ status: "processing" });
+    const responsePayload = { status: "processing" };
+    aiStatusCache.set(requestId, responsePayload);
+    return res.json(responsePayload);
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({
