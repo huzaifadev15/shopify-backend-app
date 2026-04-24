@@ -6,14 +6,16 @@ import { signQuote } from "./token.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-const allowedOrigins = (process.env.CORS_ORIGIN || "*")
+const defaultCorsOrigin = process.env.STOREFRONT_ORIGIN || (process.env.SHOPIFY_SHOP_DOMAIN ? `https://${normalizeShopDomain(process.env.SHOPIFY_SHOP_DOMAIN)}` : "");
+const allowedOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigin)
   .split(",")
   .map((item) => item.trim())
-  .filter(Boolean);
+  .filter(Boolean)
+  .filter((origin) => !origin.includes("*"));
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
       return callback(new Error("Not allowed by CORS"));
@@ -29,6 +31,12 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
 const SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
 const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || "").trim();
+const FAL_KEY = (process.env.FAL_KEY || "").trim();
+const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
+const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
+const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
+const aiRequestMeta = new Map();
+const aiRateLimitByIp = new Map();
 
 let pricingCache = null;
 
@@ -37,6 +45,64 @@ function normalizeShopDomain(value) {
     .trim()
     .replace(/^https?:\/\//i, "")
     .replace(/\/+$/g, "");
+}
+
+function buildFalModelPath(provider, model) {
+  if (provider !== "fal.ai") throw new Error("Unsupported provider. Only fal.ai is currently supported.");
+  if (model !== "flux") throw new Error("Unsupported model. Only flux is currently supported.");
+  return "fal-ai/flux/dev";
+}
+
+function getFalHeaders() {
+  if (!FAL_KEY) {
+    throw new Error("Missing FAL_KEY environment variable.");
+  }
+  return {
+    Authorization: `Key ${FAL_KEY}`,
+    "Content-Type": "application/json"
+  };
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = AI_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function readJsonSafely(response) {
+  const raw = await response.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch (_error) {
+    return { raw };
+  }
+}
+
+function enforceAiRateLimit(req, res) {
+  const ip = req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown";
+  const now = Date.now();
+  const current = aiRateLimitByIp.get(ip) || { count: 0, windowStart: now };
+  if (now - current.windowStart > AI_RATE_LIMIT_WINDOW_MS) {
+    current.count = 0;
+    current.windowStart = now;
+  }
+  current.count += 1;
+  aiRateLimitByIp.set(ip, current);
+  if (current.count > AI_RATE_LIMIT_MAX) {
+    res.status(429).json({
+      ok: false,
+      message: "Rate limit exceeded. Please try again shortly."
+    });
+    return false;
+  }
+  return true;
 }
 
 const SHOP_DOMAIN = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
@@ -404,6 +470,159 @@ app.get("/api/shopify/functions", async (_req, res) => {
   }
 });
 
+app.post("/api/ai/generate", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+
+  try {
+    const {
+      prompt = "",
+      provider = "fal.ai",
+      model = "flux",
+      productHandle = ""
+    } = req.body || {};
+
+    const trimmedPrompt = String(prompt || "").trim();
+    if (!trimmedPrompt) {
+      return res.status(400).json({ ok: false, message: "prompt is required." });
+    }
+    if (trimmedPrompt.length < 10 || trimmedPrompt.length > 400) {
+      return res.status(400).json({
+        ok: false,
+        message: "prompt length must be between 10 and 400 characters."
+      });
+    }
+
+    const modelPath = buildFalModelPath(provider, model);
+    const response = await fetchWithTimeout(
+      `https://queue.fal.run/${modelPath}`,
+      {
+        method: "POST",
+        headers: getFalHeaders(),
+        body: JSON.stringify({
+          prompt: trimmedPrompt,
+          ...(productHandle ? { productHandle } : {})
+        })
+      }
+    );
+
+    const raw = await response.text();
+    let payload = {};
+    try {
+      payload = raw ? JSON.parse(raw) : {};
+    } catch (_error) {
+      payload = {};
+    }
+
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false,
+        message: payload?.error || payload?.message || "fal.ai generate request failed."
+      });
+    }
+
+    const requestId = payload?.request_id || payload?.requestId;
+    if (!requestId) {
+      return res.status(502).json({
+        ok: false,
+        message: "fal.ai did not return requestId."
+      });
+    }
+
+    aiRequestMeta.set(requestId, {
+      provider,
+      model
+    });
+
+    // Keep logs minimal to avoid storing full prompts in logs.
+    const shop = req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
+    console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${trimmedPrompt.length}`);
+
+    return res.json({
+      requestId,
+      status: "processing"
+    });
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({
+      ok: false,
+      message: isTimeout ? "AI generation request timed out." : (error?.message || "Failed to start AI generation.")
+    });
+  }
+});
+
+app.get("/api/ai/generate/:requestId", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+
+  try {
+    const requestId = String(req.params.requestId || "").trim();
+    if (!requestId) {
+      return res.status(400).json({ ok: false, message: "requestId is required." });
+    }
+
+    const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
+    const modelPath = buildFalModelPath(meta.provider, meta.model);
+    const response = await fetchWithTimeout(
+      `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
+      {
+        method: "POST",
+        headers: getFalHeaders(),
+        body: JSON.stringify({})
+      }
+    );
+    const payload = await readJsonSafely(response);
+
+    if (!response.ok) {
+      return res.status(502).json({
+        status: "failed",
+        error: payload?.error || payload?.detail || payload?.message || "fal.ai status request failed."
+      });
+    }
+
+    const status = String(payload?.status || "").toLowerCase();
+    if (status === "completed") {
+      const resultResponse = await fetchWithTimeout(
+        `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
+        {
+          method: "POST",
+          headers: getFalHeaders(),
+          body: JSON.stringify({})
+        }
+      );
+      const resultPayload = await readJsonSafely(resultResponse);
+
+      if (!resultResponse.ok) {
+        return res.status(502).json({
+          status: "failed",
+          error: resultPayload?.error || resultPayload?.detail || resultPayload?.message || "fal.ai result fetch failed."
+        });
+      }
+
+      const images = (resultPayload?.images || [])
+        .map((item) => ({ url: item?.url }))
+        .filter((item) => Boolean(item.url));
+      return res.json({
+        status: "completed",
+        images
+      });
+    }
+
+    if (status === "failed") {
+      return res.json({
+        status: "failed",
+        error: payload?.error || payload?.message || "Image generation failed."
+      });
+    }
+
+    return res.json({ status: "processing" });
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({
+      status: "failed",
+      error: isTimeout ? "AI status request timed out." : (error?.message || "Failed to check AI generation status.")
+    });
+  }
+});
+
 app.post("/api/shopify/discounts/quote/ensure", async (_req, res) => {
   try {
     const { functionId, functions, source } = await getQuoteFunctionId();
@@ -766,6 +985,16 @@ app.post("/api/quote", async (req, res) => {
       message: err?.message || "Unknown quote error"
     });
   }
+});
+
+app.use((error, _req, res, next) => {
+  if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
+    return res.status(400).json({
+      ok: false,
+      message: "Invalid JSON body. Please send valid JSON with Content-Type: application/json."
+    });
+  }
+  return next(error);
 });
 
 app.listen(PORT, () => {
