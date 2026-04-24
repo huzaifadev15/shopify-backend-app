@@ -39,8 +39,13 @@ const FAL_KEY = (process.env.FAL_KEY || "").trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
 const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
+const AI_AWAIT_TIMEOUT_MS = Number(process.env.AI_AWAIT_TIMEOUT_MS || 45_000);
+const AI_AWAIT_POLL_MS = Number(process.env.AI_AWAIT_POLL_MS || 1500);
+const AI_STATUS_MIN_POLL_MS = Number(process.env.AI_STATUS_MIN_POLL_MS || 1500);
 const aiRequestMeta = new Map();
 const aiRateLimitByIp = new Map();
+const aiStatusCache = new Map();
+const aiStatusLastPollByKey = new Map();
 
 let pricingCache = null;
 
@@ -54,7 +59,7 @@ function normalizeShopDomain(value) {
 function buildFalModelPath(provider, model) {
   if (provider !== "fal.ai") throw new Error("Unsupported provider. Only fal.ai is currently supported.");
   if (model !== "flux") throw new Error("Unsupported model. Only flux is currently supported.");
-  return "fal-ai/flux/dev";
+  return "fal-ai/flux";
 }
 
 function getFalHeaders() {
@@ -78,6 +83,23 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = AI_TIMEOUT_MS) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function readJsonSafely(response) {
+  const raw = await response.text();
+  try {
+    return raw ? JSON.parse(raw) : {};
+  } catch (_error) {
+    return {};
+  }
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRequesterKey(req) {
+  return String(req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown");
 }
 
 function enforceAiRateLimit(req, res) {
@@ -556,70 +578,75 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
     const modelPath = buildFalModelPath(meta.provider, meta.model);
-    const response = await fetchWithTimeout(
+
+    // Throttle: return cached result if called too soon
+    const requesterKey = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
+    const pollKey = `${requesterKey}:${requestId}`;
+    const now = Date.now();
+    const lastPollAt = aiStatusLastPollByKey.get(pollKey) || 0;
+    const cached = aiStatusCache.get(requestId);
+    if (now - lastPollAt < AI_STATUS_MIN_POLL_MS && cached) {
+      return res.json(cached);
+    }
+    aiStatusLastPollByKey.set(pollKey, now);
+
+    // Fetch status from Fal using GET (correct method for status)
+    const statusResponse = await fetchWithTimeout(
       `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
-      {
-        method: "GET",
-        headers: getFalHeaders()
-      }
+      { method: "GET", headers: getFalHeaders() }
     );
+    const statusPayload = await readJsonSafely(statusResponse);
 
-    const raw = await response.text();
-    let payload = {};
-    try {
-      payload = raw ? JSON.parse(raw) : {};
-    } catch (_error) {
-      payload = {};
-    }
-
-    if (!response.ok) {
-      return res.status(502).json({
+    if (!statusResponse.ok) {
+      const errPayload = {
         status: "failed",
-        error: payload?.error || payload?.message || "fal.ai status request failed."
-      });
+        error: statusPayload?.detail || statusPayload?.error || statusPayload?.message || `fal.ai status check failed (${statusResponse.status}).`
+      };
+      aiStatusCache.set(requestId, errPayload);
+      return res.status(502).json(errPayload);
     }
 
-    const status = String(payload?.status || "").toLowerCase();
-    if (status === "completed") {
+    const falStatus = String(statusPayload?.status || "").toUpperCase();
+
+    // Completed — fetch result
+    if (falStatus === "COMPLETED") {
       const resultResponse = await fetchWithTimeout(
         `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
-        {
-          method: "GET",
-          headers: getFalHeaders()
-        }
+        { method: "GET", headers: getFalHeaders() }
       );
-      const resultRaw = await resultResponse.text();
-      let resultPayload = {};
-      try {
-        resultPayload = resultRaw ? JSON.parse(resultRaw) : {};
-      } catch (_error) {
-        resultPayload = {};
-      }
+      const resultPayload = await readJsonSafely(resultResponse);
 
       if (!resultResponse.ok) {
-        return res.status(502).json({
+        const errPayload = {
           status: "failed",
-          error: resultPayload?.error || resultPayload?.message || "fal.ai result fetch failed."
-        });
+          error: resultPayload?.detail || resultPayload?.error || resultPayload?.message || "fal.ai result fetch failed."
+        };
+        aiStatusCache.set(requestId, errPayload);
+        return res.status(502).json(errPayload);
       }
 
       const images = (resultPayload?.images || [])
         .map((item) => ({ url: item?.url }))
         .filter((item) => Boolean(item.url));
-      return res.json({
-        status: "completed",
-        images
-      });
+      const successPayload = { status: "completed", images };
+      aiStatusCache.set(requestId, successPayload);
+      return res.json(successPayload);
     }
 
-    if (status === "failed") {
-      return res.json({
+    if (falStatus === "FAILED" || falStatus === "ERROR") {
+      const errPayload = {
         status: "failed",
-        error: payload?.error || payload?.message || "Image generation failed."
-      });
+        error: statusPayload?.error || statusPayload?.detail || statusPayload?.message || "Image generation failed."
+      };
+      aiStatusCache.set(requestId, errPayload);
+      return res.json(errPayload);
     }
 
-    return res.json({ status: "processing" });
+    // IN_QUEUE, IN_PROGRESS, or any other state => still processing
+    const processingPayload = { status: "processing", falStatus };
+    aiStatusCache.set(requestId, processingPayload);
+    return res.json(processingPayload);
+
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({
