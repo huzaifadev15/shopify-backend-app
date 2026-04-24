@@ -40,6 +40,8 @@ const FAL_KEY = (process.env.FAL_KEY || "").trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
 const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
+const AI_AWAIT_TIMEOUT_MS = Number(process.env.AI_AWAIT_TIMEOUT_MS || 45_000);
+const AI_AWAIT_POLL_MS = Number(process.env.AI_AWAIT_POLL_MS || 1500);
 const aiRequestMeta = new Map();
 const aiRateLimitByIp = new Map();
 
@@ -88,6 +90,75 @@ async function readJsonSafely(response) {
   } catch (_error) {
     return { raw };
   }
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchFalStatus(modelPath, requestId) {
+  const response = await fetchWithTimeout(
+    `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
+    {
+      method: "POST",
+      headers: getFalHeaders(),
+      body: JSON.stringify({})
+    }
+  );
+  const payload = await readJsonSafely(response);
+  return { response, payload };
+}
+
+async function fetchFalResult(modelPath, requestId) {
+  const response = await fetchWithTimeout(
+    `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
+    {
+      method: "POST",
+      headers: getFalHeaders(),
+      body: JSON.stringify({})
+    }
+  );
+  const payload = await readJsonSafely(response);
+  return { response, payload };
+}
+
+async function waitForFalCompletion({ modelPath, requestId, timeoutMs = AI_AWAIT_TIMEOUT_MS, pollMs = AI_AWAIT_POLL_MS }) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const { response, payload } = await fetchFalStatus(modelPath, requestId);
+    if (!response.ok) {
+      return {
+        status: "failed",
+        error: payload?.error || payload?.detail || payload?.message || "fal.ai status request failed."
+      };
+    }
+
+    const status = String(payload?.status || "").toLowerCase();
+    if (status === "completed") {
+      const { response: resultResponse, payload: resultPayload } = await fetchFalResult(modelPath, requestId);
+      if (!resultResponse.ok) {
+        return {
+          status: "failed",
+          error: resultPayload?.error || resultPayload?.detail || resultPayload?.message || "fal.ai result fetch failed."
+        };
+      }
+      const images = (resultPayload?.images || [])
+        .map((item) => ({ url: item?.url }))
+        .filter((item) => Boolean(item.url));
+      return { status: "completed", images };
+    }
+
+    if (status === "failed") {
+      return {
+        status: "failed",
+        error: payload?.error || payload?.detail || payload?.message || "Image generation failed."
+      };
+    }
+
+    await sleep(pollMs);
+  }
+
+  return { status: "processing" };
 }
 
 function enforceAiRateLimit(req, res) {
@@ -483,7 +554,8 @@ app.post("/api/ai/generate", async (req, res) => {
       prompt = "",
       provider = "fal.ai",
       model = "flux",
-      productHandle = ""
+      productHandle = "",
+      awaitResponse = false
     } = req.body || {};
 
     const trimmedPrompt = String(prompt || "").trim();
@@ -542,6 +614,27 @@ app.post("/api/ai/generate", async (req, res) => {
     const shop = req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
     console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${trimmedPrompt.length}`);
 
+    if (awaitResponse === true) {
+      const finalState = await waitForFalCompletion({
+        modelPath,
+        requestId
+      });
+      if (finalState.status === "completed") {
+        return res.json({
+          requestId,
+          status: "completed",
+          images: finalState.images
+        });
+      }
+      if (finalState.status === "failed") {
+        return res.status(502).json({
+          requestId,
+          status: "failed",
+          error: finalState.error
+        });
+      }
+    }
+
     return res.json({
       requestId,
       status: "processing"
@@ -566,15 +659,28 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
     const modelPath = buildFalModelPath(meta.provider, meta.model);
-    const response = await fetchWithTimeout(
-      `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
-      {
-        method: "POST",
-        headers: getFalHeaders(),
-        body: JSON.stringify({})
+    const waitForCompletion = req.query.wait === "1" || req.query.wait === "true";
+    if (waitForCompletion) {
+      const finalState = await waitForFalCompletion({
+        modelPath,
+        requestId
+      });
+      if (finalState.status === "completed") {
+        return res.json({
+          status: "completed",
+          images: finalState.images
+        });
       }
-    );
-    const payload = await readJsonSafely(response);
+      if (finalState.status === "failed") {
+        return res.json({
+          status: "failed",
+          error: finalState.error
+        });
+      }
+      return res.json({ status: "processing" });
+    }
+
+    const { response, payload } = await fetchFalStatus(modelPath, requestId);
 
     if (!response.ok) {
       return res.status(502).json({
@@ -585,15 +691,7 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     const status = String(payload?.status || "").toLowerCase();
     if (status === "completed") {
-      const resultResponse = await fetchWithTimeout(
-        `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
-        {
-          method: "POST",
-          headers: getFalHeaders(),
-          body: JSON.stringify({})
-        }
-      );
-      const resultPayload = await readJsonSafely(resultResponse);
+      const { response: resultResponse, payload: resultPayload } = await fetchFalResult(modelPath, requestId);
 
       if (!resultResponse.ok) {
         return res.status(502).json({
