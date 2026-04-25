@@ -274,19 +274,19 @@ async function rewritePromptForPatch(userPrompt) {
     if (!response.ok) {
       const errMsg = data?.error?.message || data?.message || `HTTP ${response.status}`;
       console.warn(`[GROQ] API error: ${errMsg} — using fallback`);
-      return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
+      return `Embroidered circular patch of ${userPrompt}, stitched thread texture, merrowed border, flat 2D bold shapes, limited thread colors, isolated on plain white background, no scenery`;
     }
 
     const rewritten = data?.choices?.[0]?.message?.content?.trim();
 
     if (!rewritten) {
-      return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
+      return `Embroidered circular patch of ${userPrompt}, stitched thread texture, merrowed border, flat 2D bold shapes, limited thread colors, isolated on plain white background, no scenery`;
     }
 
     return rewritten;
   } catch (error) {
     console.warn(`[GROQ] Prompt rewrite failed: ${error?.message || "unknown error"} — using fallback`);
-    return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
+    return `Embroidered circular patch of ${userPrompt}, stitched thread texture, merrowed border, flat 2D bold shapes, limited thread colors, isolated on plain white background, no scenery`;
   }
 }
 
@@ -688,12 +688,18 @@ app.post("/api/ai/generate", async (req, res) => {
       });
     }
 
-    // Groq rewrites the user prompt into patch-style language including the correct
-    // patch type (embroidered, PVC, woven, leather, etc.).
+    // If the user didn't mention any patch type, tag it as embroidered so Groq
+    // always has a type to apply the correct style rules against.
+    const PATCH_TYPE_KEYWORDS = ["embroidered", "pvc", "rubber", "chenille", "woven", "leather", "bullion", "wire", "printed", "sublimated", "felt"];
+    const promptLower = userPrompt.toLowerCase();
+    const hasPatchType = PATCH_TYPE_KEYWORDS.some((kw) => promptLower.includes(kw));
+    const promptForGroq = hasPatchType ? userPrompt : `embroidered patch: ${userPrompt}`;
+
+    // Groq rewrites into full patch-style language with correct type rules applied.
     // We only prepend visual style constraints — never override the patch type itself.
-    const patchPrompt = await rewritePromptForPatch(userPrompt);
+    const patchPrompt = await rewritePromptForPatch(promptForGroq);
     const finalPrompt = `2D flat vector patch design, sticker art style, no 3D, no depth, no clay, hard outer border, isolated on pure white background: ${patchPrompt}`;
-    console.log(`[AI_GENERATE] original="${userPrompt}" rewritten="${patchPrompt}"`);
+    console.log(`[AI_GENERATE] original="${userPrompt}" groqInput="${promptForGroq}" rewritten="${patchPrompt}"`);
     console.log(`[AI_GENERATE] finalPrompt="${finalPrompt}"`);
 
     const modelPath = buildFalModelPath(provider, model);
