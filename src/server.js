@@ -36,12 +36,20 @@ const SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
 const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || "").trim();
 const FAL_KEY = (process.env.FAL_KEY || "").trim();
+const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
 const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
 const AI_AWAIT_TIMEOUT_MS = Number(process.env.AI_AWAIT_TIMEOUT_MS || 45_000);
 const AI_AWAIT_POLL_MS = Number(process.env.AI_AWAIT_POLL_MS || 1500);
 const AI_STATUS_MIN_POLL_MS = Number(process.env.AI_STATUS_MIN_POLL_MS || 1500);
+const AI_ALLOWED_MODELS = (process.env.AI_ALLOWED_MODELS || "flux,flux-pro,flux-schnell")
+  .split(",").map(s => s.trim()).filter(Boolean);
+const AI_NEGATIVE_PROMPT = (
+  process.env.AI_NEGATIVE_PROMPT ||
+  "photorealistic, photograph, 3d render, hyperrealistic, skin texture, bokeh, camera, lens, realistic lighting, blurry, watermark, ugly, deformed"
+).trim();
+
 const aiRequestMeta = new Map();
 const aiRateLimitByIp = new Map();
 const aiStatusCache = new Map();
@@ -56,10 +64,29 @@ function normalizeShopDomain(value) {
     .replace(/\/+$/g, "");
 }
 
+// ── Fal.ai model registry ─────────────────────────────────────────────────────
+const FAL_MODEL_PATHS = {
+  "flux":         "fal-ai/flux",
+  "flux-pro":     "fal-ai/flux-pro",
+  "flux-schnell": "fal-ai/flux/schnell",
+  "flux-realism": "fal-ai/flux-realism",
+  "recraft-v3":   "fal-ai/recraft-v3",
+};
+
 function buildFalModelPath(provider, model) {
-  if (provider !== "fal.ai") throw new Error("Unsupported provider. Only fal.ai is currently supported.");
-  if (model !== "flux") throw new Error("Unsupported model. Only flux is currently supported.");
-  return "fal-ai/flux";
+  if (provider !== "fal.ai") {
+    throw new Error("Unsupported provider. Only fal.ai is currently supported.");
+  }
+  if (!AI_ALLOWED_MODELS.includes(model)) {
+    throw new Error(
+      `Unsupported model "${model}". Allowed: ${AI_ALLOWED_MODELS.join(", ")}.`
+    );
+  }
+  const path = FAL_MODEL_PATHS[model];
+  if (!path) {
+    throw new Error(`No fal.ai path configured for model "${model}".`);
+  }
+  return path;
 }
 
 function getFalHeaders() {
@@ -127,6 +154,66 @@ const SHOP_DOMAIN = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
 async function getPricing() {
   if (!pricingCache) pricingCache = await loadPricing(PRICING_FILE);
   return pricingCache;
+}
+
+// ── Groq prompt rewriter ──────────────────────────────────────────────────────
+// Dynamically rewrites any user prompt into proper patch-style art prompt.
+// Works for ALL patch types: embroidered, PVC, woven, leather, chenille, etc.
+// If no GROQ_API_KEY is set, falls back to a simple suffix append.
+async function rewritePromptForPatch(userPrompt) {
+  if (!GROQ_API_KEY) {
+    // Graceful fallback — no Groq key configured
+    return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+  }
+
+  try {
+    const response = await fetchWithTimeout(
+      "https://api.groq.com/openai/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: "llama3-8b-8192",
+          max_tokens: 120,
+          messages: [
+            {
+              role: "system",
+              content: `You are a prompt rewriter for a patch design generator.
+Patches can be any type: embroidered, PVC, woven, leather, chenille, printed, rubber, bullion, or any other style the user mentions.
+Your job is to rewrite the user's prompt so the generated image always looks like a patch.
+Rules:
+- Keep the subject 100% as the user intended — never remove or change what they want to depict
+- If the user specifies a patch type (e.g. "leather patch", "woven patch", "PVC patch"), preserve it exactly
+- If no patch type is mentioned, keep it generic — just say "patch design"
+- Always add: flat graphic style, clean border, isolated on white background
+- Return ONLY the rewritten prompt, nothing else, no explanation, no preamble`
+            },
+            {
+              role: "user",
+              content: userPrompt
+            }
+          ]
+        })
+      },
+      8000
+    );
+
+    const data = await readJsonSafely(response);
+    const rewritten = data?.choices?.[0]?.message?.content?.trim();
+
+    if (!rewritten) {
+      return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+    }
+
+    return rewritten;
+  } catch (error) {
+    // If Groq fails (timeout, network, etc.) fall back gracefully
+    console.warn(`[GROQ] Prompt rewrite failed: ${error?.message || "unknown error"} — using fallback`);
+    return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+  }
 }
 
 async function shopifyAdminGraphql(query, variables = {}) {
@@ -487,6 +574,17 @@ app.get("/api/shopify/functions", async (_req, res) => {
   }
 });
 
+// ── GET /api/ai/models ────────────────────────────────────────────────────────
+// Returns the list of models the frontend is allowed to use.
+app.get("/api/ai/models", (_req, res) => {
+  res.json({
+    ok: true,
+    provider: "fal.ai",
+    models: AI_ALLOWED_MODELS
+  });
+});
+
+// ── POST /api/ai/generate ─────────────────────────────────────────────────────
 app.post("/api/ai/generate", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
 
@@ -498,16 +596,21 @@ app.post("/api/ai/generate", async (req, res) => {
       productHandle = ""
     } = req.body || {};
 
-    const trimmedPrompt = String(prompt || "").trim();
-    if (!trimmedPrompt) {
+    const userPrompt = String(prompt || "").trim();
+    if (!userPrompt) {
       return res.status(400).json({ ok: false, message: "prompt is required." });
     }
-    if (trimmedPrompt.length < 10 || trimmedPrompt.length > 400) {
+    if (userPrompt.length < 3 || userPrompt.length > 300) {
       return res.status(400).json({
         ok: false,
-        message: "prompt length must be between 10 and 400 characters."
+        message: "prompt must be between 3 and 300 characters."
       });
     }
+
+    // Dynamically rewrite the prompt via Groq so it always generates patch-style art.
+    // Works for any patch type the user specifies — embroidered, PVC, woven, leather, etc.
+    const patchPrompt = await rewritePromptForPatch(userPrompt);
+    console.log(`[AI_GENERATE] original="${userPrompt}" rewritten="${patchPrompt}"`);
 
     const modelPath = buildFalModelPath(provider, model);
     const response = await fetchWithTimeout(
@@ -516,7 +619,11 @@ app.post("/api/ai/generate", async (req, res) => {
         method: "POST",
         headers: getFalHeaders(),
         body: JSON.stringify({
-          prompt: trimmedPrompt,
+          prompt: patchPrompt,
+          negative_prompt: AI_NEGATIVE_PROMPT,
+          num_inference_steps: 28,
+          guidance_scale: 7.5,
+          image_size: "square",
           ...(productHandle ? { productHandle } : {})
         })
       }
@@ -545,14 +652,10 @@ app.post("/api/ai/generate", async (req, res) => {
       });
     }
 
-    aiRequestMeta.set(requestId, {
-      provider,
-      model
-    });
+    aiRequestMeta.set(requestId, { provider, model });
 
-    // Keep logs minimal to avoid storing full prompts in logs.
     const shop = req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
-    console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${trimmedPrompt.length}`);
+    console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${userPrompt.length}`);
 
     return res.json({
       requestId,
@@ -567,6 +670,7 @@ app.post("/api/ai/generate", async (req, res) => {
   }
 });
 
+// ── GET /api/ai/generate/:requestId ──────────────────────────────────────────
 app.get("/api/ai/generate/:requestId", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
 
@@ -579,7 +683,6 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
     const modelPath = buildFalModelPath(meta.provider, meta.model);
 
-    // Throttle: return cached result if called too soon
     const requesterKey = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
     const pollKey = `${requesterKey}:${requestId}`;
     const now = Date.now();
@@ -590,7 +693,6 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     }
     aiStatusLastPollByKey.set(pollKey, now);
 
-    // Fetch status from Fal using GET (correct method for status)
     const statusResponse = await fetchWithTimeout(
       `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
       { method: "GET", headers: getFalHeaders() }
@@ -608,7 +710,6 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     const falStatus = String(statusPayload?.status || "").toUpperCase();
 
-    // Completed — fetch result
     if (falStatus === "COMPLETED") {
       const resultResponse = await fetchWithTimeout(
         `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
@@ -642,7 +743,6 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
       return res.json(errPayload);
     }
 
-    // IN_QUEUE, IN_PROGRESS, or any other state => still processing
     const processingPayload = { status: "processing", falStatus };
     aiStatusCache.set(requestId, processingPayload);
     return res.json(processingPayload);
@@ -1031,6 +1131,5 @@ app.use((error, _req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  // eslint-disable-next-line no-console
   console.log(`Quote API running on http://localhost:${PORT}`);
 });
