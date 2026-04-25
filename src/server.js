@@ -176,13 +176,12 @@ async function rewritePromptForPatch(userPrompt) {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          model: "llama3-8b-8192",
+          model: "llama-3.1-8b-instant",
           max_tokens: 120,
           messages: [
             {
               role: "system",
-             // REPLACE the content field in the system message with this:
-content: `You are a prompt rewriter for a patch design generator.
+              content: `You are a prompt rewriter for a patch design generator.
 Your ONLY job is to make the image look like a real physical patch (embroidered, PVC, woven, leather, chenille, etc).
 
 Critical style rules to ALWAYS include:
@@ -210,6 +209,13 @@ Rules:
     );
 
     const data = await readJsonSafely(response);
+
+    if (!response.ok) {
+      const errMsg = data?.error?.message || data?.message || `HTTP ${response.status}`;
+      console.warn(`[GROQ] API error: ${errMsg} — using fallback`);
+      return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+    }
+
     const rewritten = data?.choices?.[0]?.message?.content?.trim();
 
     if (!rewritten) {
