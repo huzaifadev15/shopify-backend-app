@@ -162,8 +162,7 @@ async function getPricing() {
 // If no GROQ_API_KEY is set, falls back to a simple suffix append.
 async function rewritePromptForPatch(userPrompt) {
   if (!GROQ_API_KEY) {
-    // Graceful fallback — no Groq key configured
-    return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+    return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
   }
 
   try {
@@ -182,21 +181,24 @@ async function rewritePromptForPatch(userPrompt) {
             {
               role: "system",
               content: `You are a prompt rewriter for a patch design generator.
-Your ONLY job is to make the image look like a real physical patch (embroidered, PVC, woven, leather, chenille, etc).
+Your ONLY job is to rewrite the user prompt so it generates a real physical patch image.
 
-Critical style rules to ALWAYS include:
-- Hard outer border/edge (like a real patch has)
-- Isolated on plain white background
-- Flat 2D graphic — no depth, no scenery, no background landscape
+STRICT FORMAT — always start with the patch type:
+- If the user mentions a patch type (PVC, woven, embroidered, leather, chenille, etc.), your output MUST start with that type. Example: "PVC patch of a skull..."
+- If no patch type is mentioned, default to embroidered. Example: "Embroidered patch of a lion..."
+
+Style rules to always include in the rewrite:
+- Flat 2D graphic, no depth, no scenery, no background
 - Bold simple shapes, limited color palette
-- Looks like it could be sewn or pressed onto a jacket
+- Hard outer border/edge
+- Isolated on plain white background
 
-Rules:
-- Keep the subject exactly as the user intended
-- If the user specifies a patch type, preserve it
-- If no type mentioned, default to "embroidered patch"
-- Strip out cinematic, realistic, painterly, or artistic framing words
-- Return ONLY the rewritten prompt, nothing else`
+Also:
+- NEVER remove or replace the main subject — if the user says "a woman drinking coffee", the woman must appear in the rewrite, not just the coffee cup
+- You may simplify the scene (remove background, action details) but the primary subject stays
+- Strip cinematic, realistic, painterly, or photographic framing words
+- If the input contains multiple lines or subjects, summarize them into ONE single unified patch design — do not list them separately, do not pick just one, create a single cohesive concept that represents all of them (e.g. a collage patch, a themed multi-figure design, or a single symbol that captures the overall theme)
+- Return ONLY the rewritten prompt as a single sentence, nothing else`
             },
             {
               role: "user",
@@ -213,20 +215,19 @@ Rules:
     if (!response.ok) {
       const errMsg = data?.error?.message || data?.message || `HTTP ${response.status}`;
       console.warn(`[GROQ] API error: ${errMsg} — using fallback`);
-      return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+      return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
     }
 
     const rewritten = data?.choices?.[0]?.message?.content?.trim();
 
     if (!rewritten) {
-      return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+      return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
     }
 
     return rewritten;
   } catch (error) {
-    // If Groq fails (timeout, network, etc.) fall back gracefully
     console.warn(`[GROQ] Prompt rewrite failed: ${error?.message || "unknown error"} — using fallback`);
-    return `${userPrompt}, patch design, flat graphic style, clean border, isolated on white`;
+    return `patch design of ${userPrompt}, flat 2D graphic, bold simple shapes, hard border, isolated on white background, no depth`;
   }
 }
 
@@ -610,7 +611,14 @@ app.post("/api/ai/generate", async (req, res) => {
       productHandle = ""
     } = req.body || {};
 
-    const userPrompt = String(prompt || "").trim();
+    // Normalize the prompt — collapse blank lines, trim each line.
+    // Groq handles multiple subjects by summarizing them into one patch concept.
+    const userPrompt = String(prompt || "")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+      .join("\n");
+
     if (!userPrompt) {
       return res.status(400).json({ ok: false, message: "prompt is required." });
     }
@@ -621,10 +629,13 @@ app.post("/api/ai/generate", async (req, res) => {
       });
     }
 
-    // Dynamically rewrite the prompt via Groq so it always generates patch-style art.
-    // Works for any patch type the user specifies — embroidered, PVC, woven, leather, etc.
+    // Groq rewrites the user prompt into patch-style language including the correct
+    // patch type (embroidered, PVC, woven, leather, etc.).
+    // We only prepend visual style constraints — never override the patch type itself.
     const patchPrompt = await rewritePromptForPatch(userPrompt);
+    const finalPrompt = `flat 2D patch art, thick hard outer border, isolated on pure white background, no scenery, no depth, no background: ${patchPrompt}`;
     console.log(`[AI_GENERATE] original="${userPrompt}" rewritten="${patchPrompt}"`);
+    console.log(`[AI_GENERATE] finalPrompt="${finalPrompt}"`);
 
     const modelPath = buildFalModelPath(provider, model);
     const response = await fetchWithTimeout(
@@ -633,12 +644,11 @@ app.post("/api/ai/generate", async (req, res) => {
         method: "POST",
         headers: getFalHeaders(),
         body: JSON.stringify({
-          prompt: patchPrompt,
+          prompt: finalPrompt,
           negative_prompt: AI_NEGATIVE_PROMPT,
-          num_inference_steps: 28,
-          guidance_scale: 7.5,
-          image_size: "square",
-          ...(productHandle ? { productHandle } : {})
+          num_inference_steps: 35,
+          guidance_scale: 9.0,
+          image_size: "square"
         })
       }
     );
