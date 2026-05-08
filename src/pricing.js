@@ -1,14 +1,7 @@
-import fs from "fs/promises";
-import path from "path";
-import { fileURLToPath } from "url";
+import pricingData from "../data/pricing.json" with { type: "json" };
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-export async function loadPricing(relativePath) {
-  const resolved = path.resolve(__dirname, "..", relativePath);
-  const raw = await fs.readFile(resolved, "utf8");
-  return JSON.parse(raw);
+export async function loadPricing(_relativePath) {
+  return pricingData;
 }
 
 function normalize(name) {
