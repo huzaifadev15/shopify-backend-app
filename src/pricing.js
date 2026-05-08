@@ -1,7 +1,63 @@
 import pricingData from "../data/pricing.json" with { type: "json" };
+import basePricingData from "../data/pricing-test.json" with { type: "json" };
 
 export async function loadPricing(_relativePath) {
   return pricingData;
+}
+
+const DISCOUNT_TIERS = [
+  { min: 1000, discount: 0.86 },
+  { min: 500, discount: 0.83 },
+  { min: 200, discount: 0.8 },
+  { min: 100, discount: 0.75 },
+  { min: 50, discount: 0.63 },
+  { min: 25, discount: 0.38 },
+  { min: 10, discount: 0 },
+];
+
+function getDiscount(qty) {
+  for (const tier of DISCOUNT_TIERS) {
+    if (qty >= tier.min) return tier.discount;
+  }
+  return null;
+}
+
+function getTierLabel(qty) {
+  const tiers = [10, 25, 50, 100, 200, 500, 1000];
+  for (let i = tiers.length - 1; i >= 0; i--) {
+    if (qty >= tiers[i]) {
+      const next = tiers[i + 1];
+      return {
+        minQty: tiers[i],
+        label: next ? `${tiers[i]}-${next - 1}` : `${tiers[i]}+`,
+      };
+    }
+  }
+  return { minQty: qty, label: `${qty}+` };
+}
+
+function quoteFromBasePrices(productName, size, qty) {
+  const normName = normalize(productName);
+  const entry = basePricingData.find(
+    (r) => normalize(r.name) === normName && r.size === size,
+  );
+  if (!entry) return null;
+
+  const discount = getDiscount(qty);
+  if (discount === null) return null;
+
+  const base = parseFloat(entry.basePrice);
+  const unitPrice = parseFloat((base * (1 - discount)).toFixed(2));
+  const total = parseFloat((unitPrice * qty).toFixed(2));
+  const { minQty, label } = getTierLabel(qty);
+
+  return {
+    sizeUsed: size,
+    tierQty: minQty,
+    tierRange: label,
+    unitPrice,
+    total,
+  };
 }
 
 function normalize(name) {
@@ -17,7 +73,7 @@ export function matchRows(rows, productName) {
     "3D Embroidered patch",
     "3D Embroidered",
     "Embroidered & 3D Embroidered",
-    productName
+    productName,
   ].filter(Boolean);
 
   for (const alias of aliases) {
@@ -28,7 +84,7 @@ export function matchRows(rows, productName) {
   return rows.filter(
     (r) =>
       normalize(r.name).includes(normalize("3D Embroidered")) ||
-      normalize(r.name).includes(normalize(productName))
+      normalize(r.name).includes(normalize(productName)),
   );
 }
 
@@ -37,7 +93,7 @@ export function quoteFromRows(rows, { height, qty }) {
     (r) =>
       typeof r.size === "number" &&
       typeof r.quantity === "number" &&
-      !Number.isNaN(parseFloat(r.price))
+      !Number.isNaN(parseFloat(r.price)),
   );
   if (!valid.length) return null;
 
@@ -51,6 +107,10 @@ export function quoteFromRows(rows, { height, qty }) {
       minDiff = d;
     }
   }
+
+  const productName = rows[0]?.name || "";
+  const baseQuote = quoteFromBasePrices(productName, closest, qty);
+  if (baseQuote) return baseQuote;
 
   const sizeRows = valid
     .filter((r) => r.size === closest)
@@ -75,6 +135,6 @@ export function quoteFromRows(rows, { height, qty }) {
     tierQty: selected.quantity,
     tierRange,
     unitPrice,
-    total
+    total,
   };
 }
