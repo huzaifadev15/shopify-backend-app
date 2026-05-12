@@ -794,10 +794,8 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     }
     aiStatusLastPollByKey.set(pollKey, now);
 
-    // fal.ai queue URLs: model-prefixed for submit, but status/result use the global requests endpoint
-    const falBase = `https://queue.fal.run/requests/${encodeURIComponent(falRequestId)}`;
     const statusResponse = await fetchWithTimeout(
-      `${falBase}/status`,
+      `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}/status`,
       { method: "GET", headers: getFalHeaders() }
     );
     const statusPayload = await readJsonSafely(statusResponse);
@@ -815,7 +813,7 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     if (falStatus === "COMPLETED") {
       const resultResponse = await fetchWithTimeout(
-        falBase,
+        `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}`,
         { method: "GET", headers: getFalHeaders() }
       );
       const resultPayload = await readJsonSafely(resultResponse);
