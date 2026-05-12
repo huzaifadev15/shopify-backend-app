@@ -746,8 +746,9 @@ app.post("/api/ai/generate", async (req, res) => {
     const shop = req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
     console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${userPrompt.length}`);
 
+    const compositeId = Buffer.from(JSON.stringify({ modelPath: FAL_MODEL_PATHS[model], id: requestId })).toString("base64url");
     return res.json({
-      requestId,
+      requestId: compositeId,
       status: "processing"
     });
   } catch (error) {
@@ -772,6 +773,17 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
     const modelPath = meta.modelPath || buildFalModelPath(meta.provider, meta.model);
 
+    // Decode composite requestId if it's base64url encoded
+    let falRequestId = requestId;
+    let resolvedModelPath = modelPath;
+    try {
+      const decoded = JSON.parse(Buffer.from(requestId, "base64url").toString());
+      if (decoded.modelPath && decoded.id) {
+        resolvedModelPath = decoded.modelPath;
+        falRequestId = decoded.id;
+      }
+    } catch (_) {}
+
     const requesterKey = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
     const pollKey = `${requesterKey}:${requestId}`;
     const now = Date.now();
@@ -783,7 +795,7 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     aiStatusLastPollByKey.set(pollKey, now);
 
     const statusResponse = await fetchWithTimeout(
-      `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}/status`,
+      `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}/status`,
       { method: "GET", headers: getFalHeaders() }
     );
     const statusPayload = await readJsonSafely(statusResponse);
@@ -801,7 +813,7 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 
     if (falStatus === "COMPLETED") {
       const resultResponse = await fetchWithTimeout(
-        `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(requestId)}`,
+        `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}`,
         { method: "GET", headers: getFalHeaders() }
       );
       const resultPayload = await readJsonSafely(resultResponse);
@@ -1233,7 +1245,8 @@ app.post("/api/ai/remove-background", async (req, res) => {
     const requestId = payload?.request_id || payload?.requestId;
     if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
     aiRequestMeta.set(requestId, { provider: "fal.ai", model: "birefnet", modelPath: "fal-ai/birefnet" });
-    return res.json({ requestId, status: "processing" });
+    const compositeIdBg = Buffer.from(JSON.stringify({ modelPath: "fal-ai/birefnet", id: requestId })).toString("base64url");
+    return res.json({ requestId: compositeIdBg, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start background removal.") });
@@ -1264,7 +1277,8 @@ app.post("/api/ai/crop", async (req, res) => {
     const requestId = payload?.request_id || payload?.requestId;
     if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
     aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
-    return res.json({ requestId, status: "processing" });
+    const compositeIdCrop = Buffer.from(JSON.stringify({ modelPath: "fal-ai/flux-pro/kontext/max", id: requestId })).toString("base64url");
+    return res.json({ requestId: compositeIdCrop, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start crop.") });
@@ -1299,7 +1313,8 @@ app.post("/api/ai/edit", async (req, res) => {
     const requestId = payload?.request_id || payload?.requestId;
     if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
     aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
-    return res.json({ requestId, status: "processing" });
+    const compositeIdEdit = Buffer.from(JSON.stringify({ modelPath: "fal-ai/flux-pro/kontext/max", id: requestId })).toString("base64url");
+    return res.json({ requestId: compositeIdEdit, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start edit.") });
