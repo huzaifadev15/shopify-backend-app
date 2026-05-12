@@ -770,7 +770,7 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     }
 
     const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
-    const modelPath = buildFalModelPath(meta.provider, meta.model);
+    const modelPath = meta.modelPath || buildFalModelPath(meta.provider, meta.model);
 
     const requesterKey = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
     const pollKey = `${requesterKey}:${requestId}`;
@@ -815,9 +815,10 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
         return res.status(502).json(errPayload);
       }
 
-      const images = (resultPayload?.images || [])
-        .map((item) => ({ url: item?.url }))
-        .filter((item) => Boolean(item.url));
+      // birefnet returns a single `image` object; all other models return `images` array
+      const images = resultPayload?.image?.url
+        ? [{ url: resultPayload.image.url }]
+        : (resultPayload?.images || []).map((item) => ({ url: item?.url })).filter((item) => Boolean(item.url));
       const successPayload = { status: "completed", images };
       aiStatusCache.set(requestId, successPayload);
       return res.json(successPayload);
@@ -1206,6 +1207,102 @@ app.post("/api/quote", async (req, res) => {
       ok: false,
       message: err?.message || "Unknown quote error"
     });
+  }
+});
+
+// ── POST /api/ai/remove-background ──────────────────────────────────────────
+app.post("/api/ai/remove-background", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+  try {
+    const { image_url } = req.body || {};
+    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
+
+    const response = await fetchWithTimeout(
+      "https://queue.fal.run/fal-ai/birefnet",
+      {
+        method: "POST",
+        headers: getFalHeaders(),
+        body: JSON.stringify({ image_url })
+      },
+      AI_TIMEOUT_MS
+    );
+    const payload = await readJsonSafely(response);
+    if (!response.ok) {
+      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai birefnet request failed." });
+    }
+    const requestId = payload?.request_id || payload?.requestId;
+    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
+    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "birefnet", modelPath: "fal-ai/birefnet" });
+    return res.json({ requestId, status: "processing" });
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start background removal.") });
+  }
+});
+
+// ── POST /api/ai/crop ─────────────────────────────────────────────────────────
+app.post("/api/ai/crop", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+  try {
+    const { image_url } = req.body || {};
+    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
+
+    const cropPrompt = "Tightly crop the image so the patch artwork fills the entire frame with minimal whitespace around the edges. Keep the patch design intact, do not alter or modify the artwork.";
+    const response = await fetchWithTimeout(
+      "https://queue.fal.run/fal-ai/flux-pro/kontext/max",
+      {
+        method: "POST",
+        headers: getFalHeaders(),
+        body: JSON.stringify({ prompt: cropPrompt, image_url })
+      },
+      AI_TIMEOUT_MS
+    );
+    const payload = await readJsonSafely(response);
+    if (!response.ok) {
+      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai crop request failed." });
+    }
+    const requestId = payload?.request_id || payload?.requestId;
+    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
+    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
+    return res.json({ requestId, status: "processing" });
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start crop.") });
+  }
+});
+
+// ── POST /api/ai/edit ─────────────────────────────────────────────────────────
+app.post("/api/ai/edit", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+  try {
+    const { image_url, prompt = "" } = req.body || {};
+    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
+    const userPrompt = String(prompt).trim();
+    if (!userPrompt) return res.status(400).json({ ok: false, message: "prompt is required." });
+    if (userPrompt.length < 3 || userPrompt.length > 300) {
+      return res.status(400).json({ ok: false, message: "prompt must be between 3 and 300 characters." });
+    }
+
+    const response = await fetchWithTimeout(
+      "https://queue.fal.run/fal-ai/flux-pro/kontext/max",
+      {
+        method: "POST",
+        headers: getFalHeaders(),
+        body: JSON.stringify({ prompt: userPrompt, image_url })
+      },
+      AI_TIMEOUT_MS
+    );
+    const payload = await readJsonSafely(response);
+    if (!response.ok) {
+      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai edit request failed." });
+    }
+    const requestId = payload?.request_id || payload?.requestId;
+    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
+    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
+    return res.json({ requestId, status: "processing" });
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start edit.") });
   }
 });
 
