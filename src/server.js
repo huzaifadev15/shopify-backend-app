@@ -760,101 +760,78 @@ app.post("/api/ai/generate", async (req, res) => {
   }
 });
 
+// ── Shared fal.ai status poller ──────────────────────────────────────────────
+async function pollFalStatus(compositeRequestId, res) {
+  const requestId = String(compositeRequestId || "").trim();
+  if (!requestId) return res.status(400).json({ ok: false, message: "requestId is required." });
+
+  let falRequestId = requestId;
+  let modelPath = "fal-ai/flux";
+  try {
+    const decoded = JSON.parse(Buffer.from(requestId, "base64url").toString());
+    if (decoded.modelPath && decoded.id) {
+      modelPath = decoded.modelPath;
+      falRequestId = decoded.id;
+    }
+  } catch (_) {}
+
+  const falBase = `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(falRequestId)}`;
+  const statusResponse = await fetchWithTimeout(`${falBase}/status`, { method: "GET", headers: getFalHeaders() });
+  const statusPayload = await readJsonSafely(statusResponse);
+
+  if (!statusResponse.ok) {
+    return res.status(502).json({
+      status: "failed",
+      error: statusPayload?.detail || statusPayload?.error || statusPayload?.message || `fal.ai status check failed (${statusResponse.status}).`
+    });
+  }
+
+  const falStatus = String(statusPayload?.status || "").toUpperCase();
+
+  if (falStatus === "COMPLETED") {
+    const resultResponse = await fetchWithTimeout(falBase, { method: "GET", headers: getFalHeaders() });
+    const resultPayload = await readJsonSafely(resultResponse);
+    if (!resultResponse.ok) {
+      return res.status(502).json({
+        status: "failed",
+        error: resultPayload?.detail || resultPayload?.error || resultPayload?.message || "fal.ai result fetch failed."
+      });
+    }
+    const images = resultPayload?.image?.url
+      ? [{ url: resultPayload.image.url }]
+      : (resultPayload?.images || []).map((item) => ({ url: item?.url })).filter((item) => Boolean(item.url));
+    return res.json({ status: "completed", images });
+  }
+
+  if (falStatus === "FAILED" || falStatus === "ERROR") {
+    return res.json({
+      status: "failed",
+      error: statusPayload?.error || statusPayload?.detail || statusPayload?.message || "Job failed."
+    });
+  }
+
+  return res.json({ status: "processing", falStatus });
+}
+
 // ── GET /api/ai/generate/:requestId ──────────────────────────────────────────
 app.get("/api/ai/generate/:requestId", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
-
   try {
-    const requestId = String(req.params.requestId || "").trim();
-    if (!requestId) {
-      return res.status(400).json({ ok: false, message: "requestId is required." });
-    }
-
-    const meta = aiRequestMeta.get(requestId) || { provider: "fal.ai", model: "flux" };
-    const modelPath = meta.modelPath || buildFalModelPath(meta.provider, meta.model);
-
-    // Decode composite requestId if it's base64url encoded
-    let falRequestId = requestId;
-    let resolvedModelPath = modelPath;
-    try {
-      const decoded = JSON.parse(Buffer.from(requestId, "base64url").toString());
-      if (decoded.modelPath && decoded.id) {
-        resolvedModelPath = decoded.modelPath;
-        falRequestId = decoded.id;
-      }
-    } catch (_) {}
-
-    const requesterKey = String(req.ip || req.headers["x-forwarded-for"] || "unknown");
-    const pollKey = `${requesterKey}:${requestId}`;
-    const now = Date.now();
-    const lastPollAt = aiStatusLastPollByKey.get(pollKey) || 0;
-    const cached = aiStatusCache.get(requestId);
-    if (now - lastPollAt < AI_STATUS_MIN_POLL_MS && cached) {
-      return res.json(cached);
-    }
-    aiStatusLastPollByKey.set(pollKey, now);
-
-    const statusResponse = await fetchWithTimeout(
-      `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}/status`,
-      { method: "GET", headers: getFalHeaders() }
-    );
-    const statusPayload = await readJsonSafely(statusResponse);
-
-    if (!statusResponse.ok) {
-      const errPayload = {
-        status: "failed",
-        error: statusPayload?.detail || statusPayload?.error || statusPayload?.message || `fal.ai status check failed (${statusResponse.status}).`
-      };
-      aiStatusCache.set(requestId, errPayload);
-      return res.status(502).json(errPayload);
-    }
-
-    const falStatus = String(statusPayload?.status || "").toUpperCase();
-
-    if (falStatus === "COMPLETED") {
-      const resultResponse = await fetchWithTimeout(
-        `https://queue.fal.run/${resolvedModelPath}/requests/${encodeURIComponent(falRequestId)}`,
-        { method: "GET", headers: getFalHeaders() }
-      );
-      const resultPayload = await readJsonSafely(resultResponse);
-
-      if (!resultResponse.ok) {
-        const errPayload = {
-          status: "failed",
-          error: resultPayload?.detail || resultPayload?.error || resultPayload?.message || "fal.ai result fetch failed."
-        };
-        aiStatusCache.set(requestId, errPayload);
-        return res.status(502).json(errPayload);
-      }
-
-      // birefnet returns a single `image` object; all other models return `images` array
-      const images = resultPayload?.image?.url
-        ? [{ url: resultPayload.image.url }]
-        : (resultPayload?.images || []).map((item) => ({ url: item?.url })).filter((item) => Boolean(item.url));
-      const successPayload = { status: "completed", images };
-      aiStatusCache.set(requestId, successPayload);
-      return res.json(successPayload);
-    }
-
-    if (falStatus === "FAILED" || falStatus === "ERROR") {
-      const errPayload = {
-        status: "failed",
-        error: statusPayload?.error || statusPayload?.detail || statusPayload?.message || "Image generation failed."
-      };
-      aiStatusCache.set(requestId, errPayload);
-      return res.json(errPayload);
-    }
-
-    const processingPayload = { status: "processing", falStatus };
-    aiStatusCache.set(requestId, processingPayload);
-    return res.json(processingPayload);
-
+    return await pollFalStatus(req.params.requestId, res);
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({
-      status: "failed",
-      error: isTimeout ? "AI status request timed out." : (error?.message || "Failed to check AI generation status.")
-    });
+    return res.status(isTimeout ? 504 : 500).json({ status: "failed", error: isTimeout ? "Timed out." : (error?.message || "Status check failed.") });
+  }
+});
+
+// ── GET /api/ai/edit/:requestId ───────────────────────────────────────────────
+app.get("/api/ai/edit/:requestId", async (req, res) => {
+  if (!enforceAiRateLimit(req, res)) return;
+  try {
+    return await pollFalStatus(req.params.requestId, res);
+  } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    return res.status(isTimeout ? 504 : 500).json({ status: "failed", error: isTimeout ? "Timed out." : (error?.message || "Status check failed.") });
   }
 });
 
