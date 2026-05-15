@@ -1298,6 +1298,72 @@ app.post("/api/ai/edit", async (req, res) => {
   }
 });
 
+// ── POST /api/forms/submit ────────────────────────────────────────────────────
+// Proxy route to submit form data to outjackets.com
+app.post("/api/forms/submit", async (req, res) => {
+  const FORM_API_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public";
+
+  const requiredFields = [
+    "email",
+    "phoneNumber",
+    "queryFrom",
+    "patchType",
+    "shape",
+    "backing",
+    "border",
+    "thread",
+    "colors",
+    "size",
+    "quantity",
+    "unitPrice",
+    "subTotal",
+  ];
+
+  try {
+    // Validate required fields
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        message: `Missing required fields: ${missingFields.join(", ")}`
+      });
+    }
+
+    // Forward the request to the external API
+    const response = await fetch(FORM_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    const data = await response.json();
+
+    // Return the response from the external API
+    if (!response.ok) {
+      return res.status(response.status).json({
+        ok: false,
+        message: data?.message || "Failed to submit form",
+        error: data
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Form submitted successfully",
+      data
+    });
+  } catch (error) {
+    console.error("Form submission error:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Internal server error while submitting form",
+      error: error?.message
+    });
+  }
+});
+
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
