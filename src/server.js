@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { readFile } from "fs/promises";
 import path from "path";
+import { fal } from "@fal-ai/client";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
 
@@ -38,6 +39,7 @@ const SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
 const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || "").trim();
 const FAL_KEY = (process.env.FAL_KEY || "").trim();
+if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
 const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
@@ -829,11 +831,51 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
 // ── GET /api/ai/edit/:requestId ───────────────────────────────────────────────
 app.get("/api/ai/edit/:requestId", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
+
+  const compositeId = String(req.params.requestId || "").trim();
+  if (!compositeId) return res.status(400).json({ ok: false, message: "requestId is required." });
+
+  if (!FAL_KEY) return res.status(500).json({ ok: false, message: "FAL_KEY is not configured." });
+
+  let model, falRequestId;
   try {
-    return await pollFalStatus(req.params.requestId, res);
+    const decoded = JSON.parse(Buffer.from(compositeId, "base64url").toString());
+    model = decoded.model || decoded.modelPath;
+    falRequestId = decoded.id;
+    if (!model || !falRequestId) throw new Error("missing fields");
+  } catch (_) {
+    return res.status(400).json({ ok: false, message: "Invalid or malformed requestId." });
+  }
+
+  try {
+    const statusResult = await fal.queue.status(model, { requestId: falRequestId, logs: false });
+
+    if (statusResult.status === "COMPLETED") {
+      const resultData = await fal.queue.result(model, { requestId: falRequestId });
+      const output = resultData.data || {};
+      const images = output.images ?? (output.image ? [output.image] : []);
+      return res.json({
+        status: "completed",
+        images: images.map((img) => ({
+          url: img.url,
+          width: img.width,
+          height: img.height,
+          content_type: img.content_type,
+        })),
+      });
+    }
+
+    if (statusResult.status === "FAILED") {
+      return res.json({ status: "failed", error: "Job failed on fal.ai." });
+    }
+
+    return res.json({ status: "processing" });
   } catch (error) {
-    const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({ status: "failed", error: isTimeout ? "Timed out." : (error?.message || "Status check failed.") });
+    const message = error instanceof Error ? error.message : "Status check failed";
+    if (message.toLowerCase().includes("failed") || message.toLowerCase().includes("cancelled")) {
+      return res.json({ status: "failed", error: message });
+    }
+    return res.status(500).json({ ok: false, message });
   }
 });
 
@@ -1293,21 +1335,8 @@ async function resolveEditImageUrl(imageUrl) {
   const mimeType = EDIT_MIME_BY_EXT[ext] ?? "application/octet-stream";
   const bytes = await readFile(absolutePath);
 
-  const formData = new FormData();
-  formData.append("file", new Blob([bytes], { type: mimeType }), path.basename(absolutePath));
-
-  const uploadResponse = await fetchWithTimeout(
-    "https://storage.fal.run",
-    { method: "POST", headers: { Authorization: `Key ${FAL_KEY}` }, body: formData },
-    AI_TIMEOUT_MS
-  );
-  if (!uploadResponse.ok) {
-    const uploadErr = await readJsonSafely(uploadResponse);
-    throw new Error(uploadErr?.error || uploadErr?.message || `fal storage upload failed (${uploadResponse.status})`);
-  }
-  const uploadData = await readJsonSafely(uploadResponse);
-  if (!uploadData?.url) throw new Error("fal storage upload did not return a URL.");
-  return uploadData.url;
+  const fileBlob = new Blob([bytes], { type: mimeType });
+  return fal.storage.upload(fileBlob);
 }
 
 function buildEditActionInput(action, imageUrl, prompt) {
@@ -1346,23 +1375,17 @@ app.post("/api/ai/edit", async (req, res) => {
     }
 
     const resolvedImageUrl = await resolveEditImageUrl(imageUrl);
-    const modelPath = EDIT_MODEL_BY_ACTION[action];
+    const model = EDIT_MODEL_BY_ACTION[action];
     const input = buildEditActionInput(action, resolvedImageUrl, prompt);
 
-    const response = await fetchWithTimeout(
-      `https://queue.fal.run/${modelPath}`,
-      { method: "POST", headers: getFalHeaders(), body: JSON.stringify(input) },
-      AI_TIMEOUT_MS
-    );
-    const payload = await readJsonSafely(response);
-    if (!response.ok) {
-      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai edit request failed." });
-    }
-    const requestId = payload?.request_id || payload?.requestId;
-    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
+    const queueResult = await Promise.race([
+      fal.queue.submit(model, { input }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Fal queue submit timed out")), AI_TIMEOUT_MS)
+      ),
+    ]);
 
-    aiRequestMeta.set(requestId, { provider: "fal.ai", model: action, modelPath });
-    const compositeIdEdit = Buffer.from(JSON.stringify({ modelPath, id: requestId })).toString("base64url");
+    const compositeIdEdit = Buffer.from(JSON.stringify({ model, id: queueResult.request_id })).toString("base64url");
     return res.json({ requestId: compositeIdEdit, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
