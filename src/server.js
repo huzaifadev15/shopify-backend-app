@@ -580,24 +580,7 @@ app.get("/", (_req, res) => {
       }
       #auth-submit:hover { background: #333; }
       #auth-submit:disabled { background: #999; cursor: default; }
-      #auth-error {
-        color: #c0392b;
-        font-size: 13px;
-        margin-top: 10px;
-        min-height: 18px;
-      }
-      #auth-toggle {
-        text-align: center;
-        margin-top: 18px;
-        font-size: 13px;
-        color: #555;
-      }
-      #auth-toggle span {
-        color: #111;
-        font-weight: 600;
-        cursor: pointer;
-        text-decoration: underline;
-      }
+      #auth-error { color: #c0392b; font-size: 13px; margin-top: 10px; min-height: 18px; }
 
       /* ── Admin panel ── */
       #admin-section {
@@ -606,14 +589,14 @@ app.get("/", (_req, res) => {
         border-radius: 12px;
         padding: 32px 36px;
         width: 100%;
-        max-width: 680px;
+        max-width: 700px;
         box-shadow: 0 2px 12px rgba(0,0,0,.08);
       }
       #admin-header {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        margin-bottom: 6px;
+        margin-bottom: 4px;
       }
       #admin-header h1 { margin: 0; font-size: 22px; }
       #logout-btn {
@@ -627,6 +610,8 @@ app.get("/", (_req, res) => {
       }
       #logout-btn:hover { background: #f5f5f5; }
       #user-email { font-size: 13px; color: #666; margin-bottom: 20px; }
+
+      /* ── Shopify buttons ── */
       .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
       .btn-row button {
         padding: 9px 14px;
@@ -644,17 +629,48 @@ app.get("/", (_req, res) => {
         border-radius: 8px;
         overflow: auto;
         font-size: 13px;
-        margin: 0;
+        margin: 0 0 24px;
       }
+
+      /* ── Create user box ── */
+      .section-title {
+        font-size: 15px;
+        font-weight: 700;
+        margin: 0 0 12px;
+        padding-top: 20px;
+        border-top: 1px solid #eee;
+      }
+      #create-user-form {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: flex-end;
+      }
+      #create-user-form .field { margin: 0; flex: 1; min-width: 160px; }
+      #create-user-btn {
+        padding: 9px 18px;
+        background: #111;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #create-user-btn:hover { background: #333; }
+      #create-user-btn:disabled { background: #999; cursor: default; }
+      #create-user-msg { font-size: 13px; margin-top: 10px; min-height: 18px; }
+      #create-user-msg.ok  { color: #27ae60; }
+      #create-user-msg.err { color: #c0392b; }
 
       .hidden { display: none !important; }
     </style>
   </head>
   <body>
 
-    <!-- ── Auth card ── -->
+    <!-- ── Login card ── -->
     <div id="auth-section">
-      <h1 id="auth-title">Sign in</h1>
+      <h1>Sign in</h1>
       <p class="sub">Patches admin panel</p>
       <div class="field">
         <label for="email">Email</label>
@@ -666,9 +682,6 @@ app.get("/", (_req, res) => {
       </div>
       <button id="auth-submit">Sign in</button>
       <div id="auth-error"></div>
-      <div id="auth-toggle">
-        Don't have an account? <span id="toggle-link">Create one</span>
-      </div>
     </div>
 
     <!-- ── Admin panel (hidden until logged in) ── -->
@@ -678,6 +691,7 @@ app.get("/", (_req, res) => {
         <button id="logout-btn">Sign out</button>
       </div>
       <div id="user-email"></div>
+
       <div class="btn-row">
         <button id="ensure">Create/activate quote discount</button>
         <button id="disableQuoteDiscount">Disable quote discount</button>
@@ -686,6 +700,21 @@ app.get("/", (_req, res) => {
         <button id="disableTransform">Disable cart transform</button>
       </div>
       <pre id="out">Ready.</pre>
+
+      <!-- ── Create user ── -->
+      <p class="section-title">Create a new user</p>
+      <div id="create-user-form">
+        <div class="field">
+          <label for="new-email">Email</label>
+          <input id="new-email" type="email" placeholder="newuser@example.com" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="new-password">Password</label>
+          <input id="new-password" type="password" placeholder="Min 6 characters" autocomplete="new-password" />
+        </div>
+        <button id="create-user-btn">Create user</button>
+      </div>
+      <div id="create-user-msg"></div>
     </div>
 
     <!-- Firebase compat SDK (v10) -->
@@ -693,78 +722,59 @@ app.get("/", (_req, res) => {
     <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 
     <script>
-      // ── Firebase init ──────────────────────────────────────────────────────────
+      // ── Firebase init ─────────────────────────────────────────────────────────
       const firebaseConfig = ${firebaseConfig};
+
+      // Primary app — used for the admin's own session
       firebase.initializeApp(firebaseConfig);
       const auth = firebase.auth();
 
+      // Secondary app — used to create new users without signing out the admin
+      const secondaryApp = firebase.initializeApp(firebaseConfig, "secondary");
+      const secondaryAuth = secondaryApp.auth();
+
       // ── UI refs ───────────────────────────────────────────────────────────────
-      const authSection  = document.getElementById("auth-section");
-      const adminSection = document.getElementById("admin-section");
-      const authTitle    = document.getElementById("auth-title");
-      const emailInput   = document.getElementById("email");
-      const passInput    = document.getElementById("password");
-      const submitBtn    = document.getElementById("auth-submit");
-      const errorDiv     = document.getElementById("auth-error");
-      const toggleLink   = document.getElementById("toggle-link");
-      const toggleText   = document.getElementById("auth-toggle");
-      const userEmailDiv = document.getElementById("user-email");
-      const out          = document.getElementById("out");
+      const authSection   = document.getElementById("auth-section");
+      const adminSection  = document.getElementById("admin-section");
+      const emailInput    = document.getElementById("email");
+      const passInput     = document.getElementById("password");
+      const submitBtn     = document.getElementById("auth-submit");
+      const errorDiv      = document.getElementById("auth-error");
+      const userEmailDiv  = document.getElementById("user-email");
+      const out           = document.getElementById("out");
+      const newEmailInput = document.getElementById("new-email");
+      const newPassInput  = document.getElementById("new-password");
+      const createBtn     = document.getElementById("create-user-btn");
+      const createMsg     = document.getElementById("create-user-msg");
 
-      let isSignUp = false;
-
-      // ── Toggle login / signup ─────────────────────────────────────────────────
-      toggleLink.addEventListener("click", () => {
-        isSignUp = !isSignUp;
-        authTitle.textContent  = isSignUp ? "Create account" : "Sign in";
-        submitBtn.textContent  = isSignUp ? "Create account" : "Sign in";
-        toggleLink.textContent = isSignUp ? "Sign in instead" : "Create one";
-        toggleText.firstChild.textContent = isSignUp
-          ? "Already have an account? "
-          : "Don't have an account? ";
-        errorDiv.textContent = "";
-        passInput.autocomplete = isSignUp ? "new-password" : "current-password";
-      });
-
-      // ── Submit ────────────────────────────────────────────────────────────────
+      // ── Login ─────────────────────────────────────────────────────────────────
       submitBtn.addEventListener("click", async () => {
         const email    = emailInput.value.trim();
         const password = passInput.value;
         errorDiv.textContent = "";
-
-        if (!email || !password) {
-          errorDiv.textContent = "Please enter your email and password.";
-          return;
-        }
+        if (!email || !password) { errorDiv.textContent = "Please enter your email and password."; return; }
 
         submitBtn.disabled = true;
-        submitBtn.textContent = isSignUp ? "Creating account…" : "Signing in…";
-
+        submitBtn.textContent = "Signing in…";
         try {
-          if (isSignUp) {
-            await auth.createUserWithEmailAndPassword(email, password);
-          } else {
-            await auth.signInWithEmailAndPassword(email, password);
-          }
+          await auth.signInWithEmailAndPassword(email, password);
         } catch (err) {
           errorDiv.textContent = friendlyError(err.code);
           submitBtn.disabled = false;
-          submitBtn.textContent = isSignUp ? "Create account" : "Sign in";
+          submitBtn.textContent = "Sign in";
         }
       });
 
-      // Allow Enter key to submit
       [emailInput, passInput].forEach(el =>
         el.addEventListener("keydown", e => { if (e.key === "Enter") submitBtn.click(); })
       );
 
-      // ── Auth state observer ───────────────────────────────────────────────────
+      // ── Auth state ────────────────────────────────────────────────────────────
       auth.onAuthStateChanged(user => {
         if (user) {
           authSection.classList.add("hidden");
           adminSection.classList.remove("hidden");
           userEmailDiv.textContent = "Signed in as " + user.email;
-          out.textContent = "Ready.";
         } else {
           authSection.classList.remove("hidden");
           adminSection.classList.add("hidden");
@@ -778,7 +788,35 @@ app.get("/", (_req, res) => {
       // ── Logout ────────────────────────────────────────────────────────────────
       document.getElementById("logout-btn").addEventListener("click", () => auth.signOut());
 
-      // ── Admin buttons ─────────────────────────────────────────────────────────
+      // ── Create user (secondary app keeps admin signed in) ─────────────────────
+      createBtn.addEventListener("click", async () => {
+        const email    = newEmailInput.value.trim();
+        const password = newPassInput.value;
+        createMsg.className = "";
+        createMsg.textContent = "";
+
+        if (!email || !password) { createMsg.className = "err"; createMsg.textContent = "Email and password are required."; return; }
+        if (password.length < 6) { createMsg.className = "err"; createMsg.textContent = "Password must be at least 6 characters."; return; }
+
+        createBtn.disabled = true;
+        createBtn.textContent = "Creating…";
+        try {
+          await secondaryAuth.createUserWithEmailAndPassword(email, password);
+          await secondaryAuth.signOut();
+          createMsg.className = "ok";
+          createMsg.textContent = "User " + email + " created successfully.";
+          newEmailInput.value = "";
+          newPassInput.value  = "";
+        } catch (err) {
+          createMsg.className = "err";
+          createMsg.textContent = friendlyError(err.code);
+        } finally {
+          createBtn.disabled = false;
+          createBtn.textContent = "Create user";
+        }
+      });
+
+      // ── Shopify admin buttons ─────────────────────────────────────────────────
       async function callApi(url, label) {
         out.textContent = label + "…";
         try {
@@ -804,14 +842,14 @@ app.get("/", (_req, res) => {
       // ── Friendly error messages ───────────────────────────────────────────────
       function friendlyError(code) {
         const map = {
-          "auth/invalid-email":           "Invalid email address.",
-          "auth/user-not-found":          "No account found with this email.",
-          "auth/wrong-password":          "Incorrect password.",
-          "auth/invalid-credential":      "Incorrect email or password.",
-          "auth/email-already-in-use":    "An account with this email already exists.",
-          "auth/weak-password":           "Password must be at least 6 characters.",
-          "auth/too-many-requests":       "Too many attempts. Please try again later.",
-          "auth/network-request-failed":  "Network error. Check your connection.",
+          "auth/invalid-email":          "Invalid email address.",
+          "auth/user-not-found":         "No account found with this email.",
+          "auth/wrong-password":         "Incorrect password.",
+          "auth/invalid-credential":     "Incorrect email or password.",
+          "auth/email-already-in-use":   "An account with this email already exists.",
+          "auth/weak-password":          "Password must be at least 6 characters.",
+          "auth/too-many-requests":      "Too many attempts. Please try again later.",
+          "auth/network-request-failed": "Network error. Check your connection.",
         };
         return map[code] || "Something went wrong. Please try again.";
       }
