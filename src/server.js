@@ -41,6 +41,13 @@ const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || ""
 const FAL_KEY = (process.env.FAL_KEY || "").trim();
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
+const FIREBASE_API_KEY = (process.env.FIREBASE_API_KEY || "").trim();
+const FIREBASE_AUTH_DOMAIN = (process.env.FIREBASE_AUTH_DOMAIN || "").trim();
+const FIREBASE_PROJECT_ID = (process.env.FIREBASE_PROJECT_ID || "").trim();
+const FIREBASE_STORAGE_BUCKET = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
+const FIREBASE_MESSAGING_SENDER_ID = (process.env.FIREBASE_MESSAGING_SENDER_ID || "").trim();
+const FIREBASE_APP_ID = (process.env.FIREBASE_APP_ID || "").trim();
+const FIREBASE_MEASUREMENT_ID = (process.env.FIREBASE_MEASUREMENT_ID || "").trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
 const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
@@ -506,6 +513,16 @@ app.get("/health", (_req, res) => {
 });
 
 app.get("/", (_req, res) => {
+  const firebaseConfig = JSON.stringify({
+    apiKey: FIREBASE_API_KEY,
+    authDomain: FIREBASE_AUTH_DOMAIN,
+    projectId: FIREBASE_PROJECT_ID,
+    storageBucket: FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: FIREBASE_MESSAGING_SENDER_ID,
+    appId: FIREBASE_APP_ID,
+    measurementId: FIREBASE_MEASUREMENT_ID,
+  });
+
   res.type("html").send(`
 <!doctype html>
 <html lang="en">
@@ -514,74 +531,290 @@ app.get("/", (_req, res) => {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Patches Setup</title>
     <style>
-      body { font-family: Arial, sans-serif; margin: 24px; line-height: 1.4; }
-      code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; }
-      button { padding: 10px 14px; border: 1px solid #444; border-radius: 8px; cursor: pointer; }
-      pre { background: #111; color: #e8e8e8; padding: 12px; border-radius: 8px; overflow: auto; }
+      *, *::before, *::after { box-sizing: border-box; }
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        min-height: 100vh;
+        background: #f5f5f5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1.5;
+      }
+
+      /* ── Auth card ── */
+      #auth-section {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 12px;
+        padding: 36px 40px;
+        width: 100%;
+        max-width: 400px;
+        box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      }
+      #auth-section h1 { margin: 0 0 6px; font-size: 22px; }
+      #auth-section p.sub { margin: 0 0 24px; color: #666; font-size: 14px; }
+      .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+      .field label { font-size: 13px; font-weight: 600; color: #333; }
+      .field input {
+        padding: 9px 12px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 14px;
+        outline: none;
+        transition: border-color .15s;
+      }
+      .field input:focus { border-color: #555; }
+      #auth-submit {
+        width: 100%;
+        padding: 10px;
+        background: #111;
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 15px;
+        cursor: pointer;
+        margin-top: 4px;
+        transition: background .15s;
+      }
+      #auth-submit:hover { background: #333; }
+      #auth-submit:disabled { background: #999; cursor: default; }
+      #auth-error {
+        color: #c0392b;
+        font-size: 13px;
+        margin-top: 10px;
+        min-height: 18px;
+      }
+      #auth-toggle {
+        text-align: center;
+        margin-top: 18px;
+        font-size: 13px;
+        color: #555;
+      }
+      #auth-toggle span {
+        color: #111;
+        font-weight: 600;
+        cursor: pointer;
+        text-decoration: underline;
+      }
+
+      /* ── Admin panel ── */
+      #admin-section {
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 12px;
+        padding: 32px 36px;
+        width: 100%;
+        max-width: 680px;
+        box-shadow: 0 2px 12px rgba(0,0,0,.08);
+      }
+      #admin-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 6px;
+      }
+      #admin-header h1 { margin: 0; font-size: 22px; }
+      #logout-btn {
+        padding: 6px 14px;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        color: #333;
+      }
+      #logout-btn:hover { background: #f5f5f5; }
+      #user-email { font-size: 13px; color: #666; margin-bottom: 20px; }
+      .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+      .btn-row button {
+        padding: 9px 14px;
+        border: 1px solid #444;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        background: #fff;
+      }
+      .btn-row button:hover { background: #f0f0f0; }
+      pre {
+        background: #111;
+        color: #e8e8e8;
+        padding: 14px;
+        border-radius: 8px;
+        overflow: auto;
+        font-size: 13px;
+        margin: 0;
+      }
+
+      .hidden { display: none !important; }
     </style>
   </head>
   <body>
-    <h1>Patches app is running</h1>
-    <p>This page is shown because Shopify redirects here while opening the app discount flow.</p>
-    <p>Use the buttons below to activate app functions.</p>
-    <button id="ensure">Create/activate quote discount</button>
-    <button id="disableQuoteDiscount" style="margin-left: 8px;">Disable existing quote discount</button>
-    <button id="recreateQuoteDiscount" style="margin-left: 8px;">Recreate quote discount</button>
-    <button id="ensureTransform" style="margin-left: 8px;">Create/activate cart transform</button>
-    <button id="disableTransform" style="margin-left: 8px;">Disable cart transform</button>
-    <pre id="out">Ready.</pre>
+
+    <!-- ── Auth card ── -->
+    <div id="auth-section">
+      <h1 id="auth-title">Sign in</h1>
+      <p class="sub">Patches admin panel</p>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" placeholder="you@example.com" autocomplete="email" />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" />
+      </div>
+      <button id="auth-submit">Sign in</button>
+      <div id="auth-error"></div>
+      <div id="auth-toggle">
+        Don't have an account? <span id="toggle-link">Create one</span>
+      </div>
+    </div>
+
+    <!-- ── Admin panel (hidden until logged in) ── -->
+    <div id="admin-section" class="hidden">
+      <div id="admin-header">
+        <h1>Patches app</h1>
+        <button id="logout-btn">Sign out</button>
+      </div>
+      <div id="user-email"></div>
+      <div class="btn-row">
+        <button id="ensure">Create/activate quote discount</button>
+        <button id="disableQuoteDiscount">Disable quote discount</button>
+        <button id="recreateQuoteDiscount">Recreate quote discount</button>
+        <button id="ensureTransform">Create/activate cart transform</button>
+        <button id="disableTransform">Disable cart transform</button>
+      </div>
+      <pre id="out">Ready.</pre>
+    </div>
+
+    <!-- Firebase compat SDK (v10) -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
     <script>
-      const out = document.getElementById("out");
-      document.getElementById("ensure").addEventListener("click", async () => {
-        out.textContent = "Creating discount...";
+      // ── Firebase init ──────────────────────────────────────────────────────────
+      const firebaseConfig = ${firebaseConfig};
+      firebase.initializeApp(firebaseConfig);
+      const auth = firebase.auth();
+
+      // ── UI refs ───────────────────────────────────────────────────────────────
+      const authSection  = document.getElementById("auth-section");
+      const adminSection = document.getElementById("admin-section");
+      const authTitle    = document.getElementById("auth-title");
+      const emailInput   = document.getElementById("email");
+      const passInput    = document.getElementById("password");
+      const submitBtn    = document.getElementById("auth-submit");
+      const errorDiv     = document.getElementById("auth-error");
+      const toggleLink   = document.getElementById("toggle-link");
+      const toggleText   = document.getElementById("auth-toggle");
+      const userEmailDiv = document.getElementById("user-email");
+      const out          = document.getElementById("out");
+
+      let isSignUp = false;
+
+      // ── Toggle login / signup ─────────────────────────────────────────────────
+      toggleLink.addEventListener("click", () => {
+        isSignUp = !isSignUp;
+        authTitle.textContent  = isSignUp ? "Create account" : "Sign in";
+        submitBtn.textContent  = isSignUp ? "Create account" : "Sign in";
+        toggleLink.textContent = isSignUp ? "Sign in instead" : "Create one";
+        toggleText.firstChild.textContent = isSignUp
+          ? "Already have an account? "
+          : "Don't have an account? ";
+        errorDiv.textContent = "";
+        passInput.autocomplete = isSignUp ? "new-password" : "current-password";
+      });
+
+      // ── Submit ────────────────────────────────────────────────────────────────
+      submitBtn.addEventListener("click", async () => {
+        const email    = emailInput.value.trim();
+        const password = passInput.value;
+        errorDiv.textContent = "";
+
+        if (!email || !password) {
+          errorDiv.textContent = "Please enter your email and password.";
+          return;
+        }
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = isSignUp ? "Creating account…" : "Signing in…";
+
         try {
-          const response = await fetch("/api/shopify/discounts/quote/ensure", { method: "POST" });
-          const data = await response.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          out.textContent = "Request failed: " + (error.message || String(error));
+          if (isSignUp) {
+            await auth.createUserWithEmailAndPassword(email, password);
+          } else {
+            await auth.signInWithEmailAndPassword(email, password);
+          }
+        } catch (err) {
+          errorDiv.textContent = friendlyError(err.code);
+          submitBtn.disabled = false;
+          submitBtn.textContent = isSignUp ? "Create account" : "Sign in";
         }
       });
-      document.getElementById("disableQuoteDiscount").addEventListener("click", async () => {
-        out.textContent = "Disabling existing quote discount...";
-        try {
-          const response = await fetch("/api/shopify/discounts/quote/disable", { method: "POST" });
-          const data = await response.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          out.textContent = "Request failed: " + (error.message || String(error));
+
+      // Allow Enter key to submit
+      [emailInput, passInput].forEach(el =>
+        el.addEventListener("keydown", e => { if (e.key === "Enter") submitBtn.click(); })
+      );
+
+      // ── Auth state observer ───────────────────────────────────────────────────
+      auth.onAuthStateChanged(user => {
+        if (user) {
+          authSection.classList.add("hidden");
+          adminSection.classList.remove("hidden");
+          userEmailDiv.textContent = "Signed in as " + user.email;
+          out.textContent = "Ready.";
+        } else {
+          authSection.classList.remove("hidden");
+          adminSection.classList.add("hidden");
+          emailInput.value = "";
+          passInput.value  = "";
+          submitBtn.disabled = false;
+          submitBtn.textContent = "Sign in";
         }
       });
-      document.getElementById("recreateQuoteDiscount").addEventListener("click", async () => {
-        out.textContent = "Recreating quote discount...";
+
+      // ── Logout ────────────────────────────────────────────────────────────────
+      document.getElementById("logout-btn").addEventListener("click", () => auth.signOut());
+
+      // ── Admin buttons ─────────────────────────────────────────────────────────
+      async function callApi(url, label) {
+        out.textContent = label + "…";
         try {
-          const response = await fetch("/api/shopify/discounts/quote/recreate", { method: "POST" });
-          const data = await response.json();
+          const res  = await fetch(url, { method: "POST" });
+          const data = await res.json();
           out.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          out.textContent = "Request failed: " + (error.message || String(error));
+        } catch (err) {
+          out.textContent = "Request failed: " + (err.message || String(err));
         }
-      });
-      document.getElementById("ensureTransform").addEventListener("click", async () => {
-        out.textContent = "Creating cart transform...";
-        try {
-          const response = await fetch("/api/shopify/cart-transform/ensure", { method: "POST" });
-          const data = await response.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          out.textContent = "Request failed: " + (error.message || String(error));
-        }
-      });
-      document.getElementById("disableTransform").addEventListener("click", async () => {
-        out.textContent = "Disabling cart transform...";
-        try {
-          const response = await fetch("/api/shopify/cart-transform/disable", { method: "POST" });
-          const data = await response.json();
-          out.textContent = JSON.stringify(data, null, 2);
-        } catch (error) {
-          out.textContent = "Request failed: " + (error.message || String(error));
-        }
-      });
+      }
+
+      document.getElementById("ensure").addEventListener("click",
+        () => callApi("/api/shopify/discounts/quote/ensure", "Creating discount"));
+      document.getElementById("disableQuoteDiscount").addEventListener("click",
+        () => callApi("/api/shopify/discounts/quote/disable", "Disabling quote discount"));
+      document.getElementById("recreateQuoteDiscount").addEventListener("click",
+        () => callApi("/api/shopify/discounts/quote/recreate", "Recreating quote discount"));
+      document.getElementById("ensureTransform").addEventListener("click",
+        () => callApi("/api/shopify/cart-transform/ensure", "Creating cart transform"));
+      document.getElementById("disableTransform").addEventListener("click",
+        () => callApi("/api/shopify/cart-transform/disable", "Disabling cart transform"));
+
+      // ── Friendly error messages ───────────────────────────────────────────────
+      function friendlyError(code) {
+        const map = {
+          "auth/invalid-email":           "Invalid email address.",
+          "auth/user-not-found":          "No account found with this email.",
+          "auth/wrong-password":          "Incorrect password.",
+          "auth/invalid-credential":      "Incorrect email or password.",
+          "auth/email-already-in-use":    "An account with this email already exists.",
+          "auth/weak-password":           "Password must be at least 6 characters.",
+          "auth/too-many-requests":       "Too many attempts. Please try again later.",
+          "auth/network-request-failed":  "Network error. Check your connection.",
+        };
+        return map[code] || "Something went wrong. Please try again.";
+      }
     </script>
   </body>
 </html>
