@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import { readFile } from "fs/promises";
 import path from "path";
+import multer from "multer";
 import { fal } from "@fal-ai/client";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
@@ -1727,6 +1728,141 @@ app.post("/api/forms/submit", async (req, res) => {
       message: "Internal server error while submitting form",
       error: error?.message
     });
+  }
+});
+
+// ── POST /api/upload — Shopify CDN via staged uploads ────────────────────────
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  fileFilter(_req, file, cb) {
+    const allowed = [
+      "image/jpeg", "image/jpg", "image/png", "image/gif",
+      "image/webp", "image/svg+xml", "application/pdf",
+      "application/illustrator", "application/postscript",
+      "image/ai", "image/eps",
+    ];
+    allowed.includes(file.mimetype)
+      ? cb(null, true)
+      : cb(new Error("File type not supported. Please upload an image (JPEG, PNG, GIF, WebP, SVG) or document (PDF, AI, EPS)"));
+  },
+});
+
+function buildStoredFileName(originalName) {
+  const lastDot = originalName.lastIndexOf(".");
+  const hasExt  = lastDot > 0;
+  const base     = hasExt ? originalName.slice(0, lastDot) : originalName;
+  const ext      = hasExt ? originalName.slice(lastDot).toLowerCase() : "";
+  const safeName = base.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80) || "upload";
+  const suffix   = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${safeName}-${suffix}${ext}`;
+}
+
+app.options("/api/upload", (_req, res) => {
+  res.set({
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
+    "Access-Control-Max-Age": "86400",
+  }).sendStatus(200);
+});
+
+app.get("/api/upload", (_req, res) => {
+  res.json({ message: "File upload endpoint — Shopify CDN" });
+});
+
+app.post("/api/upload", upload.single("file"), async (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file provided" });
+    }
+
+    const { originalname, mimetype, size, buffer } = req.file;
+    const fileName   = buildStoredFileName(originalname);
+    const resource   = mimetype.startsWith("image/") ? "IMAGE" : "FILE";
+
+    // ── Step 1: Ask Shopify for a pre-signed upload URL ───────────────────────
+    const stagedData = await shopifyAdminGraphql(
+      `mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+        stagedUploadsCreate(input: $input) {
+          stagedTargets {
+            url
+            resourceUrl
+            parameters { name value }
+          }
+          userErrors { field message }
+        }
+      }`,
+      {
+        input: [{
+          filename:   fileName,
+          mimeType:   mimetype,
+          resource,
+          fileSize:   String(size),
+          httpMethod: "PUT",
+        }],
+      }
+    );
+
+    const stageErrors = stagedData.stagedUploadsCreate.userErrors;
+    if (stageErrors.length) {
+      return res.status(400).json({ error: stageErrors[0].message });
+    }
+
+    const target = stagedData.stagedUploadsCreate.stagedTargets[0];
+
+    // ── Step 2: PUT the file bytes to the pre-signed URL ─────────────────────
+    const uploadRes = await fetch(target.url, {
+      method:  "PUT",
+      headers: { "Content-Type": mimetype, "Content-Length": String(size) },
+      body:    buffer,
+    });
+
+    if (!uploadRes.ok) {
+      const text = await uploadRes.text().catch(() => "");
+      return res.status(502).json({ error: `Shopify staged upload failed (${uploadRes.status})`, detail: text });
+    }
+
+    // ── Step 3: Register the file in Shopify Files so it gets a CDN URL ──────
+    const fileData = await shopifyAdminGraphql(
+      `mutation fileCreate($files: [FileCreateInput!]!) {
+        fileCreate(files: $files) {
+          files {
+            ... on MediaImage  { image { url } }
+            ... on GenericFile { url }
+          }
+          userErrors { field message }
+        }
+      }`,
+      {
+        files: [{
+          contentType:    resource,
+          originalSource: target.resourceUrl,
+          filename:       fileName,
+        }],
+      }
+    );
+
+    const fileErrors = fileData.fileCreate.userErrors;
+    if (fileErrors.length) {
+      return res.status(400).json({ error: fileErrors[0].message });
+    }
+
+    const createdFile = fileData.fileCreate.files[0];
+    const cdnUrl      = createdFile?.image?.url ?? createdFile?.url ?? target.resourceUrl;
+
+    return res.json({
+      success:     true,
+      url:         cdnUrl,
+      resourceUrl: target.resourceUrl,
+      fileName:    originalname,
+      fileSize:    size,
+      fileType:    mimetype,
+    });
+
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || "Failed to upload file" });
   }
 });
 
