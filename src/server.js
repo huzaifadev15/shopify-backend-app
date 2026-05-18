@@ -1364,6 +1364,53 @@ app.post("/api/forms/submit", async (req, res) => {
   }
 });
 
+// ── GET /api/pricing/by-page-title ───────────────────────────────────────────
+// Fetches and transforms pricing data from the external API by page title
+app.get("/api/pricing/by-page-title", async (req, res) => {
+  const title = req.query.title;
+
+  if (!title) {
+    return res.status(400).json({ error: "Title parameter is required" });
+  }
+
+  try {
+    const API_BASE_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
+    const response = await fetch(
+      `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`
+    );
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: "Failed to fetch pricing data" });
+    }
+
+    const backendData = await response.json();
+
+    const sizeGroups = {};
+    backendData.forEach((item) => {
+      if (item.pricingTables) {
+        item.pricingTables.forEach((pricing) => {
+          const sizeKey = `${pricing.size}"`;
+          if (!sizeGroups[sizeKey]) {
+            sizeGroups[sizeKey] = {
+              size: sizeKey,
+              qty10: "0", qty20: "0", qty25: "0", qty50: "0",
+              qty75: "0", qty100: "0", qty200: "0", qty250: "0",
+              qty300: "0", qty500: "0", qty700: "0", qty750: "0",
+              qty1000: "0", qty1500: "0", qty2000: "0",
+              qty5000: "0", qty10000: "0",
+            };
+          }
+          sizeGroups[sizeKey][`qty${pricing.quantity}`] = pricing.price;
+        });
+      }
+    });
+
+    return res.json(Object.values(sizeGroups));
+  } catch (error) {
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
