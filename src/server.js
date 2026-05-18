@@ -36,7 +36,12 @@ const QUOTE_SECRET = process.env.QUOTE_SECRET || "dev-secret";
 const PRICING_FILE = process.env.PRICING_FILE || "./data/pricing.json";
 const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN || "";
 const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
-const SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
+const SHOPIFY_API_KEY = (process.env.SHOPIFY_API_KEY || "").trim();
+const SHOPIFY_API_SECRET = (process.env.SHOPIFY_API_SECRET || "").trim();
+const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
+const SHOPIFY_SCOPES = (process.env.SHOPIFY_SCOPES || "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms").trim();
+// Mutable — updated at runtime when OAuth completes
+let SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
 const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || "").trim();
 const FAL_KEY = (process.env.FAL_KEY || "").trim();
@@ -504,6 +509,80 @@ async function findExistingCartTransform(functionId) {
   if (!functionId) return nodes[0] || null;
   return nodes.find((node) => node?.functionId === functionId) || null;
 }
+
+// ── Shopify OAuth ─────────────────────────────────────────────────────────────
+const oauthNonces = new Set();
+
+app.get("/shopify/auth", (req, res) => {
+  const shop = normalizeShopDomain(String(req.query.shop || SHOPIFY_SHOP_DOMAIN));
+  if (!shop) return res.status(400).send("Missing shop parameter.");
+  if (!SHOPIFY_API_KEY) return res.status(500).send("SHOPIFY_API_KEY is not configured.");
+
+  const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  oauthNonces.add(nonce);
+
+  const redirectUri = `${APP_URL}/shopify/callback`;
+  const authUrl = `https://${shop}/admin/oauth/authorize?client_id=${SHOPIFY_API_KEY}&scope=${encodeURIComponent(SHOPIFY_SCOPES)}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${nonce}`;
+  res.redirect(authUrl);
+});
+
+app.get("/shopify/callback", async (req, res) => {
+  const { shop, code, state, hmac, ...rest } = req.query;
+
+  if (!shop || !code) return res.status(400).send("Missing shop or code.");
+
+  // Validate nonce to prevent CSRF
+  if (!oauthNonces.has(state)) {
+    return res.status(403).send("Invalid state parameter. Possible CSRF attack.");
+  }
+  oauthNonces.delete(state);
+
+  // Verify HMAC signature from Shopify
+  if (hmac && SHOPIFY_API_SECRET) {
+    const crypto = await import("crypto");
+    const message = Object.entries({ shop, code, state, ...rest })
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+    const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(message).digest("hex");
+    if (digest !== hmac) return res.status(403).send("HMAC validation failed.");
+  }
+
+  try {
+    const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code }),
+    });
+
+    const tokenData = await tokenRes.json();
+    if (!tokenRes.ok || !tokenData.access_token) {
+      return res.status(400).send("Failed to get access token: " + JSON.stringify(tokenData));
+    }
+
+    // Update the in-memory token so all subsequent API calls use it
+    SHOPIFY_ADMIN_ACCESS_TOKEN = tokenData.access_token;
+
+    console.log(`[OAUTH] Token obtained for shop: ${shop} — set SHOPIFY_ADMIN_ACCESS_TOKEN in your env to persist it.`);
+
+    res.type("html").send(`
+      <!doctype html><html><head><meta charset="UTF-8"/>
+      <style>body{font-family:Arial,sans-serif;max-width:600px;margin:60px auto;padding:24px}
+      code{background:#f4f4f4;padding:4px 8px;border-radius:4px;word-break:break-all;display:block;margin:8px 0}
+      .btn{display:inline-block;margin-top:16px;padding:10px 20px;background:#111;color:#fff;border-radius:8px;text-decoration:none}</style>
+      </head><body>
+      <h2>✓ OAuth successful</h2>
+      <p>Access token obtained for <strong>${shop}</strong>.</p>
+      <p>Save this token as <code>SHOPIFY_ADMIN_ACCESS_TOKEN</code> in your Vercel environment variables to persist it across deployments:</p>
+      <code>${tokenData.access_token}</code>
+      <p>Granted scopes: <code>${tokenData.scope}</code></p>
+      <a class="btn" href="/">Go to admin panel</a>
+      </body></html>
+    `);
+  } catch (err) {
+    res.status(500).send("OAuth error: " + (err?.message || String(err)));
+  }
+});
 
 app.get("/health", (_req, res) => {
   res.json({
