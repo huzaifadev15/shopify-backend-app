@@ -1,6 +1,8 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import { readFile } from "fs/promises";
+import path from "path";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
 
@@ -1262,25 +1264,94 @@ app.post("/api/ai/crop", async (req, res) => {
   }
 });
 
+// ── AI edit helpers ───────────────────────────────────────────────────────────
+const EDIT_MODEL_BY_ACTION = {
+  remove_background: "fal-ai/birefnet",
+  crop: "fal-ai/flux-pro/kontext/max",
+  edit: "fal-ai/flux-pro/kontext/max",
+};
+
+const EDIT_MIME_BY_EXT = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
+
+async function resolveEditImageUrl(imageUrl) {
+  if (imageUrl.startsWith("http://") || imageUrl.startsWith("https://")) {
+    return imageUrl;
+  }
+  if (!imageUrl.startsWith("/")) {
+    throw new Error("Invalid image path: must be an absolute URL or a path starting with /");
+  }
+  if (!FAL_KEY) throw new Error("Missing FAL_KEY environment variable.");
+
+  const safePath = path.normalize(imageUrl).replace(/^(\.\.(\/|\\|$))+/, "");
+  const absolutePath = path.join(process.cwd(), "public", safePath);
+  const ext = path.extname(absolutePath).toLowerCase();
+  const mimeType = EDIT_MIME_BY_EXT[ext] ?? "application/octet-stream";
+  const bytes = await readFile(absolutePath);
+
+  const formData = new FormData();
+  formData.append("file", new Blob([bytes], { type: mimeType }), path.basename(absolutePath));
+
+  const uploadResponse = await fetchWithTimeout(
+    "https://storage.fal.run",
+    { method: "POST", headers: { Authorization: `Key ${FAL_KEY}` }, body: formData },
+    AI_TIMEOUT_MS
+  );
+  if (!uploadResponse.ok) {
+    const uploadErr = await readJsonSafely(uploadResponse);
+    throw new Error(uploadErr?.error || uploadErr?.message || `fal storage upload failed (${uploadResponse.status})`);
+  }
+  const uploadData = await readJsonSafely(uploadResponse);
+  if (!uploadData?.url) throw new Error("fal storage upload did not return a URL.");
+  return uploadData.url;
+}
+
+function buildEditActionInput(action, imageUrl, prompt) {
+  if (action === "remove_background") {
+    return { image_url: imageUrl };
+  }
+  if (action === "crop") {
+    return {
+      image_url: imageUrl,
+      prompt:
+        "Tightly crop around the main embroidered patch artwork. Keep the full patch visible including its original background. Do not remove or change the background color. Just crop tightly around the patch edges.",
+    };
+  }
+  return {
+    image_url: imageUrl,
+    prompt:
+      String(prompt || "").trim() ||
+      "Refine this patch design while preserving the same subject, text, and colors.",
+  };
+}
+
 // ── POST /api/ai/edit ─────────────────────────────────────────────────────────
 app.post("/api/ai/edit", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
   try {
-    const { image_url, prompt = "" } = req.body || {};
-    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
-    const userPrompt = String(prompt).trim();
-    if (!userPrompt) return res.status(400).json({ ok: false, message: "prompt is required." });
-    if (userPrompt.length < 3 || userPrompt.length > 300) {
-      return res.status(400).json({ ok: false, message: "prompt must be between 3 and 300 characters." });
+    const { action, imageUrl, prompt } = req.body || {};
+
+    if (!action || !EDIT_MODEL_BY_ACTION[action]) {
+      return res.status(400).json({ ok: false, message: "action must be one of remove_background, crop, edit" });
+    }
+    if (!imageUrl || typeof imageUrl !== "string") {
+      return res.status(400).json({ ok: false, message: "imageUrl is required" });
+    }
+    if (action === "edit" && (!prompt || !String(prompt).trim())) {
+      return res.status(400).json({ ok: false, message: "prompt is required for edit action" });
     }
 
+    const resolvedImageUrl = await resolveEditImageUrl(imageUrl);
+    const modelPath = EDIT_MODEL_BY_ACTION[action];
+    const input = buildEditActionInput(action, resolvedImageUrl, prompt);
+
     const response = await fetchWithTimeout(
-      "https://queue.fal.run/fal-ai/flux-pro/kontext/max",
-      {
-        method: "POST",
-        headers: getFalHeaders(),
-        body: JSON.stringify({ prompt: userPrompt, image_url })
-      },
+      `https://queue.fal.run/${modelPath}`,
+      { method: "POST", headers: getFalHeaders(), body: JSON.stringify(input) },
       AI_TIMEOUT_MS
     );
     const payload = await readJsonSafely(response);
@@ -1289,8 +1360,9 @@ app.post("/api/ai/edit", async (req, res) => {
     }
     const requestId = payload?.request_id || payload?.requestId;
     if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
-    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
-    const compositeIdEdit = Buffer.from(JSON.stringify({ modelPath: "fal-ai/flux-pro/kontext/max", id: requestId })).toString("base64url");
+
+    aiRequestMeta.set(requestId, { provider: "fal.ai", model: action, modelPath });
+    const compositeIdEdit = Buffer.from(JSON.stringify({ modelPath, id: requestId })).toString("base64url");
     return res.json({ requestId: compositeIdEdit, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
