@@ -1997,6 +1997,87 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
   }
 });
 
+// ── PUT /api/shopify/draft-orders/:draftOrderId ──────────────────────────────
+// Updates an existing Shopify draft order via the GraphQL draftOrderUpdate mutation.
+// draftOrderId can be a numeric ID or full GID. Body: { input: DraftOrderInput }
+app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
+  const { draftOrderId } = req.params;
+  const { input } = req.body || {};
+
+  if (!draftOrderId) {
+    return res.status(400).json({ ok: false, message: "draftOrderId is required." });
+  }
+  if (!input || typeof input !== "object") {
+    return res.status(400).json({ ok: false, message: "input object is required." });
+  }
+
+  const gid = draftOrderId.startsWith("gid://") ? draftOrderId : `gid://shopify/DraftOrder/${draftOrderId}`;
+
+  try {
+    const mutation = `
+      mutation updateDraftOrderMetafields($input: DraftOrderInput!, $ownerId: ID!) {
+        draftOrderUpdate(input: $input, id: $ownerId) {
+          draftOrder {
+            id
+            name
+            status
+            totalPrice
+            invoiceUrl
+            updatedAt
+            metafields(first: 10) {
+              edges {
+                node {
+                  id
+                  namespace
+                  key
+                  value
+                }
+              }
+            }
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, { ownerId: gid, input });
+
+    const result = data?.draftOrderUpdate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors
+      });
+    }
+
+    const draftOrder = result?.draftOrder;
+    const metafields = draftOrder?.metafields?.edges?.map(({ node }) => node) || [];
+
+    return res.json({
+      ok: true,
+      draftOrder: {
+        id:         draftOrder?.id,
+        name:       draftOrder?.name,
+        status:     draftOrder?.status,
+        totalPrice: draftOrder?.totalPrice,
+        invoiceUrl: draftOrder?.invoiceUrl,
+        updatedAt:  draftOrder?.updatedAt,
+        metafields,
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to update draft order."
+    });
+  }
+});
+
 // ── POST /api/shopify/draft-orders/from-form ─────────────────────────────────
 // Creates a Shopify draft order from the patch quote form submission payload.
 app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
@@ -2089,9 +2170,41 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       });
     }
 
+    const draftOrder = result?.draftOrder;
+
+    // ── Forward to form submission API ────────────────────────────────────────
+    const FORM_API_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public";
+    try {
+      await fetch(FORM_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          phoneNumber,
+          queryFrom,
+          patchType,
+          shape,
+          backing,
+          border,
+          thread,
+          colors,
+          size,
+          quantity,
+          unitPrice,
+          subTotal,
+          uploadedFiles,
+          shopifyOrderId: draftOrder?.id,
+          invoiceUrl:     draftOrder?.invoiceUrl,
+          storeType:      "shopify",
+        })
+      });
+    } catch (formErr) {
+      console.error("[FORM_SUBMIT] Failed to forward to form API:", formErr?.message);
+    }
+
     return res.json({
       ok: true,
-      draftOrder: result?.draftOrder
+      draftOrder
     });
   } catch (error) {
     return res.status(500).json({
