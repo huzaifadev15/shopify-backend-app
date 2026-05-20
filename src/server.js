@@ -2215,29 +2215,21 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 });
 
 // ── POST /api/shopify/orders/:orderId/send-invoice ───────────────────────────
-// Sends an invoice email for a Shopify order via the GraphQL orderInvoiceSend mutation.
-// orderId can be a bare numeric ID or a full GID (gid://shopify/Order/123).
-// Body (all optional): { to, from, subject, customMessage }
+// Sends an invoice email for a Shopify draft order via draftOrderInvoiceSend mutation.
+// orderId can be a numeric ID or full GID (gid://shopify/DraftOrder/123).
 app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
   const { orderId } = req.params;
   if (!orderId) {
     return res.status(400).json({ ok: false, message: "orderId is required." });
   }
 
-  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/Order/${orderId}`;
-  const { to, from, subject, customMessage } = req.body || {};
-
-  const email = {};
-  if (to)            email.to            = to;
-  if (from)          email.from          = from;
-  if (subject)       email.subject       = subject;
-  if (customMessage) email.customMessage = customMessage;
+  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/DraftOrder/${orderId}`;
 
   try {
     const mutation = `
-      mutation OrderInvoiceSend($orderId: ID!, $email: EmailInput) {
-        orderInvoiceSend(id: $orderId, email: $email) {
-          order {
+      mutation draftOrderInvoiceSend($id: ID!) {
+        draftOrderInvoiceSend(id: $id) {
+          draftOrder {
             id
           }
           userErrors {
@@ -2247,12 +2239,9 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
       }
     `;
 
-    const data = await shopifyAdminGraphql(mutation, {
-      orderId: gid,
-      email: Object.keys(email).length ? email : undefined
-    });
+    const data = await shopifyAdminGraphql(mutation, { id: gid });
 
-    const result = data?.orderInvoiceSend;
+    const result = data?.draftOrderInvoiceSend;
     const userErrors = result?.userErrors || [];
     if (userErrors.length) {
       return res.status(400).json({
@@ -2264,12 +2253,12 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
 
     return res.json({
       ok: true,
-      orderId: result?.order?.id || gid
+      draftOrderId: result?.draftOrder?.id || gid
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to send order invoice."
+      message: error?.message || "Failed to send draft order invoice."
     });
   }
 });
