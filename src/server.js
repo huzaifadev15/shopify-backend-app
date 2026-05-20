@@ -1945,6 +1945,222 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/draft-orders ───────────────────────────────────────────
+// Creates a Shopify draft order via the GraphQL draftOrderCreate mutation.
+// Body: { input: DraftOrderInput } — pass the full input object as per Shopify docs.
+app.post("/api/shopify/draft-orders", async (req, res) => {
+  const { input } = req.body || {};
+  if (!input || typeof input !== "object") {
+    return res.status(400).json({ ok: false, message: "input object is required." });
+  }
+
+  try {
+    const mutation = `
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            status
+            totalPrice
+            createdAt
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, { input });
+
+    const result = data?.draftOrderCreate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors
+      });
+    }
+
+    return res.json({
+      ok: true,
+      draftOrder: result?.draftOrder
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to create draft order."
+    });
+  }
+});
+
+// ── POST /api/shopify/draft-orders/from-form ─────────────────────────────────
+// Creates a Shopify draft order from the patch quote form submission payload.
+app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
+  const {
+    email,
+    phoneNumber,
+    patchType,
+    shape,
+    backing,
+    border,
+    thread,
+    colors,
+    size,
+    quantity,
+    unitPrice,
+    subTotal,
+    uploadedFiles,
+    queryFrom,
+  } = req.body || {};
+
+  const required = { email, patchType, quantity, unitPrice, subTotal };
+  const missing = Object.entries(required).filter(([, v]) => v == null || v === "").map(([k]) => k);
+  if (missing.length) {
+    return res.status(400).json({ ok: false, message: `Missing required fields: ${missing.join(", ")}` });
+  }
+
+  const customAttributes = [
+    shape        && { key: "Shape",          value: String(shape) },
+    backing      && { key: "Backing",         value: String(backing) },
+    border       && { key: "Border",          value: String(border) },
+    colors       && { key: "Colors",          value: String(colors) },
+    size         && { key: "Size",            value: String(size) },
+    thread       && { key: "Thread / Notes",  value: String(thread) },
+    phoneNumber  && { key: "Phone",           value: String(phoneNumber) },
+    queryFrom    && { key: "Source URL",      value: String(queryFrom) },
+    ...(Array.isArray(uploadedFiles) ? uploadedFiles.map((url, i) => ({ key: `Artwork File ${i + 1}`, value: String(url) })) : []),
+  ].filter(Boolean);
+
+  const input = {
+    email: String(email),
+    note: [
+      `Patch Type: ${patchType}`,
+      size        ? `Size: ${size}`               : null,
+      phoneNumber ? `Phone: ${phoneNumber}`        : null,
+      thread      ? `Thread / Notes: ${thread}`    : null,
+      queryFrom   ? `Source: ${queryFrom}`         : null,
+    ].filter(Boolean).join("\n"),
+    lineItems: [
+      {
+        title:             String(patchType),
+        originalUnitPrice: Number(unitPrice),
+        quantity:          Number(quantity),
+        customAttributes,
+      },
+    ],
+    customAttributes: [
+      queryFrom && { key: "Source URL", value: String(queryFrom) },
+    ].filter(Boolean),
+  };
+
+  try {
+    const mutation = `
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            status
+            totalPrice
+            invoiceUrl
+            createdAt
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, { input });
+
+    const result = data?.draftOrderCreate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors
+      });
+    }
+
+    return res.json({
+      ok: true,
+      draftOrder: result?.draftOrder
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to create draft order."
+    });
+  }
+});
+
+// ── POST /api/shopify/orders/:orderId/send-invoice ───────────────────────────
+// Sends an invoice email for a Shopify order via the GraphQL orderInvoiceSend mutation.
+// orderId can be a bare numeric ID or a full GID (gid://shopify/Order/123).
+// Body (all optional): { to, from, subject, customMessage }
+app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
+  const { orderId } = req.params;
+  if (!orderId) {
+    return res.status(400).json({ ok: false, message: "orderId is required." });
+  }
+
+  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/Order/${orderId}`;
+  const { to, from, subject, customMessage } = req.body || {};
+
+  const email = {};
+  if (to)            email.to            = to;
+  if (from)          email.from          = from;
+  if (subject)       email.subject       = subject;
+  if (customMessage) email.customMessage = customMessage;
+
+  try {
+    const mutation = `
+      mutation OrderInvoiceSend($orderId: ID!, $email: EmailInput) {
+        orderInvoiceSend(id: $orderId, email: $email) {
+          order {
+            id
+          }
+          userErrors {
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, {
+      orderId: gid,
+      email: Object.keys(email).length ? email : undefined
+    });
+
+    const result = data?.orderInvoiceSend;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors
+      });
+    }
+
+    return res.json({
+      ok: true,
+      orderId: result?.order?.id || gid
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to send order invoice."
+    });
+  }
+});
+
 // ── GET /api/pricing/by-page-title ───────────────────────────────────────────
 // Fetches and transforms pricing data from the external API by page title
 app.get("/api/pricing/by-page-title", async (req, res) => {
