@@ -2013,6 +2013,15 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
 
   const gid = draftOrderId.startsWith("gid://") ? draftOrderId : `gid://shopify/DraftOrder/${draftOrderId}`;
 
+  // Coerce lineItems numeric fields so string values from clients don't break Shopify
+  if (Array.isArray(input.lineItems)) {
+    input.lineItems = input.lineItems.map((item) => ({
+      ...item,
+      ...(item.quantity          != null && { quantity:          parseInt(item.quantity, 10) }),
+      ...(item.originalUnitPrice != null && { originalUnitPrice: parseFloat(item.originalUnitPrice) }),
+    }));
+  }
+
   try {
     const mutation = `
       mutation updateDraftOrderMetafields($input: DraftOrderInput!, $ownerId: ID!) {
@@ -2096,6 +2105,8 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     subTotal,
     uploadedFiles,
     queryFrom,
+    notes,
+    customerName,
   } = req.body || {};
 
   const required = { email, patchType, quantity, unitPrice, subTotal };
@@ -2128,8 +2139,8 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     lineItems: [
       {
         title:             String(patchType),
-        originalUnitPrice: Number(unitPrice),
-        quantity:          Number(quantity),
+        originalUnitPrice: parseFloat(unitPrice),
+        quantity:          parseInt(quantity, 10),
         customAttributes,
       },
     ],
@@ -2193,6 +2204,8 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
           unitPrice,
           subTotal,
           uploadedFiles,
+          notes,
+          customerName,
           shopifyOrderId: draftOrder?.id,
           invoiceUrl:     draftOrder?.invoiceUrl,
           storeType:      "shopify",
