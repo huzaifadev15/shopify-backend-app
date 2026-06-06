@@ -2471,23 +2471,23 @@ app.post("/api/shopify/products", async (req, res) => {
   if (inventoryItemId && locationId) {
     try {
       const invData = await shopifyAdminGraphql(`
-        mutation SetVariantAvailableQuantity($inventoryItemId: ID!, $locationId: ID!, $quantity: Int!) {
-          inventorySetQuantities(
+        mutation AdjustVariantInventory($inventoryItemId: ID!, $locationId: ID!, $delta: Int!) {
+          inventoryAdjustQuantities(
             input: {
               name: "available"
               reason: "correction"
               referenceDocumentUri: "gid://your-app/InitialStock/1"
-              quantities: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, quantity: $quantity, changeFromQuantity: 0 }]
+              changes: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, delta: $delta }]
             }
           ) {
             inventoryAdjustmentGroup { id reason changes { name delta quantityAfterChange } }
             userErrors { code field message }
           }
         }
-      `, { inventoryItemId, locationId, quantity: 10 });
+      `, { inventoryItemId, locationId, delta: 10 });
 
-      if (invData.inventorySetQuantities.userErrors?.length > 0) {
-        console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
+      if (invData.inventoryAdjustQuantities.userErrors?.length > 0) {
+        console.warn("Inventory set warnings:", invData.inventoryAdjustQuantities.userErrors);
       }
     } catch (err) {
       console.error("Inventory set error:", err.message);
