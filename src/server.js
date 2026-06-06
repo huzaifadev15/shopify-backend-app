@@ -2124,7 +2124,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     thread       && { key: "Thread / Notes",  value: String(thread) },
     phoneNumber  && { key: "Phone",           value: String(phoneNumber) },
     queryFrom    && { key: "Source URL",      value: String(queryFrom) },
-    ...(Array.isArray(uploadedFiles) ? uploadedFiles.map((url, i) => ({ key: `Artwork File ${i + 1}`, value: String(url) })) : []),
+    ...(Array.isArray(uploadedFiles) ? uploadedFiles.map((file, i) => ({ key: `Artwork File ${i + 1}`, value: String(file?.fileUrl ?? file) })) : []),
   ].filter(Boolean);
 
   const input = {
