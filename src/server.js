@@ -2481,7 +2481,6 @@ app.post("/api/shopify/products", async (req, res) => {
                 inventoryItemId: $inventoryItemId
                 locationId: $locationId
                 quantity: $quantity
-                compareQuantity: 0
               }]
             }
           ) {
