@@ -2327,6 +2327,228 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
   }
 });
 
+// ── Product helpers ───────────────────────────────────────────────────────────
+let cachedProductPublicationInputs = null;
+let cachedProductLocationId = null;
+
+async function getProductPublicationInputs() {
+  if (cachedProductPublicationInputs) return cachedProductPublicationInputs;
+  const data = await shopifyAdminGraphql(`
+    query { publications(first: 50) { nodes { id } } }
+  `);
+  cachedProductPublicationInputs = data.publications.nodes.map((n) => ({ publicationId: n.id }));
+  return cachedProductPublicationInputs;
+}
+
+async function getProductLocationId() {
+  if (cachedProductLocationId) return cachedProductLocationId;
+  const data = await shopifyAdminGraphql(`
+    query { locations(first: 1) { nodes { id name } } }
+  `);
+  cachedProductLocationId = data.locations.nodes[0]?.id ?? null;
+  return cachedProductLocationId;
+}
+
+// ── POST /api/shopify/products ────────────────────────────────────────────────
+// Body: { title, templateSuffix, variants: [{ price }], images: [{ url, altText }] }
+app.post("/api/shopify/products", async (req, res) => {
+  const {
+    title,
+    templateSuffix = "invoice",
+    vendor,
+    productType,
+    tags,
+    options,
+    variants,
+    images,
+  } = req.body || {};
+
+  if (!title) {
+    return res.status(400).json({ ok: false, message: "title is required" });
+  }
+
+  // Step 1: Create product + attach media in one mutation
+  const mediaInput = Array.isArray(images) && images.length > 0
+    ? images.map((img) => ({
+        originalSource: img.url,
+        alt: img.altText ?? title,
+        mediaContentType: "IMAGE",
+      }))
+    : [];
+
+  const productInput = {
+    title,
+    status: "ACTIVE",
+    ...(templateSuffix && { templateSuffix }),
+    ...(vendor         && { vendor }),
+    ...(productType    && { productType }),
+    ...(tags           && { tags }),
+    ...(options        && { productOptions: options }),
+  };
+
+  let createdProduct;
+  try {
+    const data = await shopifyAdminGraphql(`
+      mutation CreateProductWithMedia($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+        productCreate(product: $product, media: $media) {
+          product {
+            id title handle status templateSuffix vendor productType tags onlineStoreUrl createdAt
+            options {
+              id name position
+              optionValues { id name hasVariants }
+            }
+            variants(first: 10) {
+              nodes {
+                id
+                inventoryItem { id tracked }
+              }
+            }
+          }
+          userErrors { field message }
+        }
+      }
+    `, { product: productInput, media: mediaInput });
+
+    if (data.productCreate.userErrors.length > 0) {
+      return res.status(422).json({ ok: false, message: "Product creation failed", detail: data.productCreate.userErrors });
+    }
+
+    createdProduct = data.productCreate.product;
+  } catch (err) {
+    console.error("Product creation error:", err.message);
+    return res.status(500).json({ ok: false, message: "Failed to create product", detail: err.message });
+  }
+
+  // Step 2: Update default variant price
+  let updatedVariants = [];
+  if (Array.isArray(variants) && variants.length > 0) {
+    const defaultVariantId = createdProduct.variants?.nodes?.[0]?.id;
+
+    const variantsInput = variants.map((v, i) => ({
+      ...(i === 0 && defaultVariantId ? { id: defaultVariantId } : {}),
+      price: String(v.price ?? "0.00"),
+      ...(v.compareAtPrice && { compareAtPrice: String(v.compareAtPrice) }),
+      ...(v.sku            && { sku: v.sku }),
+      inventoryItem: { tracked: true },
+    }));
+
+    try {
+      const data = await shopifyAdminGraphql(`
+        mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants {
+              id title price compareAtPrice sku inventoryQuantity
+              selectedOptions { name value }
+            }
+            userErrors { field message }
+          }
+        }
+      `, { productId: createdProduct.id, variants: variantsInput });
+
+      if (data.productVariantsBulkUpdate.userErrors.length > 0) {
+        return res.status(422).json({ ok: false, message: "Variant update failed", detail: data.productVariantsBulkUpdate.userErrors, product: createdProduct });
+      }
+
+      updatedVariants = data.productVariantsBulkUpdate.productVariants;
+    } catch (err) {
+      console.error("Variant update error:", err.message);
+      return res.status(500).json({ ok: false, message: "Product created but variant update failed", detail: err.message });
+    }
+  }
+
+  // Step 3: Set inventory to 10 units
+  const inventoryItemId = createdProduct.variants?.nodes?.[0]?.inventoryItem?.id;
+  const locationId = await getProductLocationId();
+
+  if (inventoryItemId && locationId) {
+    try {
+      const invData = await shopifyAdminGraphql(`
+        mutation SetVariantAvailableQuantity($inventoryItemId: ID!, $locationId: ID!, $quantity: Int!) {
+          inventorySetQuantities(
+            input: {
+              name: "available"
+              reason: "correction"
+              referenceDocumentUri: "gid://your-app/InitialStock/1"
+              ignoreCompareQuantity: true
+              quantities: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, quantity: $quantity }]
+            }
+          ) {
+            inventoryAdjustmentGroup { id reason changes { name delta quantityAfterChange } }
+            userErrors { code field message }
+          }
+        }
+      `, { inventoryItemId, locationId, quantity: 10 });
+
+      if (invData.inventorySetQuantities.userErrors?.length > 0) {
+        console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
+      }
+    } catch (err) {
+      console.error("Inventory set error:", err.message);
+    }
+  }
+
+  // Step 4: Publish to all channels
+  let onlineStoreUrl = createdProduct.onlineStoreUrl ?? null;
+  try {
+    const publicationInputs = await getProductPublicationInputs();
+    if (publicationInputs.length > 0) {
+      const pubData = await shopifyAdminGraphql(`
+        mutation PublishProductToAllPublications($productId: ID!, $inputs: [PublicationInput!]!) {
+          publishablePublish(id: $productId, input: $inputs) {
+            publishable {
+              ... on Product { id onlineStoreUrl }
+            }
+            userErrors { field message }
+          }
+        }
+      `, { productId: createdProduct.id, inputs: publicationInputs });
+
+      const published = pubData.publishablePublish;
+      if (published.userErrors?.length > 0) {
+        console.warn("Publish warnings:", published.userErrors);
+      } else {
+        onlineStoreUrl = published.publishable?.onlineStoreUrl ?? onlineStoreUrl;
+      }
+    }
+  } catch (err) {
+    console.error("Publish error:", err.message);
+  }
+
+  const { variants: _v, ...productData } = createdProduct;
+  return res.status(201).json({
+    ok: true,
+    product: { ...productData, onlineStoreUrl },
+    variants: updatedVariants,
+  });
+});
+
+// ── DELETE /api/shopify/products/:id ─────────────────────────────────────────
+app.delete("/api/shopify/products/:id", async (req, res) => {
+  const id = req.params.id.startsWith("gid://")
+    ? req.params.id
+    : `gid://shopify/Product/${req.params.id}`;
+
+  try {
+    const data = await shopifyAdminGraphql(`
+      mutation productDelete($id: ID!) {
+        productDelete(input: { id: $id }) {
+          deletedProductId
+          userErrors { field message }
+        }
+      }
+    `, { id });
+
+    if (data.productDelete.userErrors.length > 0) {
+      return res.status(422).json({ ok: false, message: "Failed to delete product", detail: data.productDelete.userErrors });
+    }
+
+    return res.json({ ok: true, deletedProductId: data.productDelete.deletedProductId });
+  } catch (err) {
+    console.error("Product delete error:", err.message);
+    return res.status(500).json({ ok: false, message: "Failed to delete product", detail: err.message });
+  }
+});
+
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
