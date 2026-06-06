@@ -2150,6 +2150,32 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
   };
 
   try {
+    // Look up the product by title to get a variantId so the image shows on the draft order.
+    const productQuery = `
+      query findProduct($query: String!) {
+        products(first: 1, query: $query) {
+          edges {
+            node {
+              variants(first: 1) {
+                edges {
+                  node {
+                    id
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+    const productData = await shopifyAdminGraphql(productQuery, { query: `title:${patchType}` });
+    const variantId = productData?.products?.edges?.[0]?.node?.variants?.edges?.[0]?.node?.id ?? null;
+
+    if (variantId) {
+      input.lineItems[0].variantId = variantId;
+      delete input.lineItems[0].title;
+    }
+
     const mutation = `
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
