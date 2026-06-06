@@ -39,7 +39,7 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
 const SHOPIFY_API_KEY = (process.env.SHOPIFY_API_KEY || "").trim();
 const SHOPIFY_API_SECRET = (process.env.SHOPIFY_API_SECRET || "").trim();
 const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-const SHOPIFY_SCOPES = (process.env.SHOPIFY_SCOPES || "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms").trim();
+const SHOPIFY_SCOPES = (process.env.SHOPIFY_SCOPES || "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications").trim();
 // Mutable — updated at runtime when OAuth completes
 let SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
@@ -2236,6 +2236,8 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 // orderId can be a numeric ID or full GID (gid://shopify/DraftOrder/123).
 app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
   const { orderId } = req.params;
+  const { customMessage } = req.body || {};
+
   if (!orderId) {
     return res.status(400).json({ ok: false, message: "orderId is required." });
   }
@@ -2244,8 +2246,8 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
 
   try {
     const mutation = `
-      mutation draftOrderInvoiceSend($id: ID!) {
-        draftOrderInvoiceSend(id: $id) {
+      mutation draftOrderInvoiceSend($id: ID!, $email: EmailInput) {
+        draftOrderInvoiceSend(id: $id, email: $email) {
           draftOrder {
             id
           }
@@ -2256,7 +2258,12 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
       }
     `;
 
-    const data = await shopifyAdminGraphql(mutation, { id: gid });
+    const variables = {
+      id: gid,
+      ...(customMessage && { email: { customMessage: String(customMessage) } }),
+    };
+
+    const data = await shopifyAdminGraphql(mutation, variables);
 
     const result = data?.draftOrderInvoiceSend;
     const userErrors = result?.userErrors || [];
@@ -2361,6 +2368,7 @@ app.post("/api/shopify/products", async (req, res) => {
     options,
     variants,
     images,
+    quantity = 100,
   } = req.body || {};
 
   if (!title) {
@@ -2469,7 +2477,6 @@ app.post("/api/shopify/products", async (req, res) => {
               name: "available"
               reason: "correction"
               referenceDocumentUri: "gid://your-app/InitialStock/1"
-              ignoreCompareQuantity: true
               quantities: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, quantity: $quantity }]
             }
           ) {
@@ -2477,7 +2484,7 @@ app.post("/api/shopify/products", async (req, res) => {
             userErrors { code field message }
           }
         }
-      `, { inventoryItemId, locationId, quantity: 10 });
+      `, { inventoryItemId, locationId, quantity: parseInt(quantity, 10) });
 
       if (invData.inventorySetQuantities.userErrors?.length > 0) {
         console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
