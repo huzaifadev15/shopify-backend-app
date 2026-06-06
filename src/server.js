@@ -2471,7 +2471,7 @@ app.post("/api/shopify/products", async (req, res) => {
   if (inventoryItemId && locationId) {
     try {
       const invData = await shopifyAdminGraphql(`
-        mutation SetVariantInventory($inventoryItemId: ID!, $locationId: ID!, $quantity: Int!) {
+        mutation SetVariantInventory($inventoryItemId: ID!, $locationId: ID!, $quantity: Int!, $idempotencyKey: String!) {
           inventorySetQuantities(
             input: {
               name: "available"
@@ -2484,12 +2484,17 @@ app.post("/api/shopify/products", async (req, res) => {
                 changeFromQuantity: null
               }]
             }
-          ) {
+          ) @idempotent(key: $idempotencyKey) {
             inventoryAdjustmentGroup { id reason changes { name delta quantityAfterChange } }
             userErrors { code field message }
           }
         }
-      `, { inventoryItemId, locationId, quantity: parseInt(quantity, 10) });
+      `, {
+        inventoryItemId,
+        locationId,
+        quantity: parseInt(quantity, 10),
+        idempotencyKey: `set-inventory-${inventoryItemId}-${Date.now()}`,
+      });
 
       if (invData.inventorySetQuantities.userErrors?.length > 0) {
         console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
