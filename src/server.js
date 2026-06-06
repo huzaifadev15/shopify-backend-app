@@ -2150,27 +2150,25 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
   };
 
   try {
-    // Look up the product by title to get a variantId so the image shows on the draft order.
-    const productQuery = `
-      query findProduct($query: String!) {
-        products(first: 1, query: $query) {
-          edges {
-            node {
-              variants(first: 1) {
-                edges {
-                  node {
-                    id
-                  }
-                }
+    // Extract product handle from queryFrom URL (e.g. ".../products/embroidered-patches" → "embroidered-patches")
+    const productHandle = queryFrom ? queryFrom.match(/\/products\/([^/?#]+)/)?.[1] ?? null : null;
+    let variantId = null;
+    if (productHandle) {
+      const productQuery = `
+        query findProduct($handle: String!) {
+          productByHandle(handle: $handle) {
+            variants(first: 1) {
+              edges {
+                node { id }
               }
             }
           }
         }
-      }
-    `;
-    const productData = await shopifyAdminGraphql(productQuery, { query: `title:${patchType}` });
-    console.log("[DRAFT_ORDER] productData:", JSON.stringify(productData, null, 2));
-    const variantId = productData?.products?.edges?.[0]?.node?.variants?.edges?.[0]?.node?.id ?? null;
+      `;
+      const productData = await shopifyAdminGraphql(productQuery, { handle: productHandle });
+      console.log("[DRAFT_ORDER] productData:", JSON.stringify(productData, null, 2));
+      variantId = productData?.productByHandle?.variants?.edges?.[0]?.node?.id ?? null;
+    }
     console.log("[DRAFT_ORDER] resolved variantId:", variantId);
 
     if (variantId) {
