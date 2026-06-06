@@ -2169,12 +2169,15 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       }
     `;
     const productData = await shopifyAdminGraphql(productQuery, { query: `title:${patchType}` });
+    console.log("[DRAFT_ORDER] productData:", JSON.stringify(productData, null, 2));
     const variantId = productData?.products?.edges?.[0]?.node?.variants?.edges?.[0]?.node?.id ?? null;
+    console.log("[DRAFT_ORDER] resolved variantId:", variantId);
 
     if (variantId) {
       input.lineItems[0].variantId = variantId;
       delete input.lineItems[0].title;
     }
+    console.log("[DRAFT_ORDER] final input:", JSON.stringify(input, null, 2));
 
     const mutation = `
       mutation draftOrderCreate($input: DraftOrderInput!) {
@@ -2197,9 +2200,11 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 
     const data = await shopifyAdminGraphql(mutation, { input });
 
+    console.log("[DRAFT_ORDER] mutation response:", JSON.stringify(data, null, 2));
     const result = data?.draftOrderCreate;
     const userErrors = result?.userErrors || [];
     if (userErrors.length) {
+      console.error("[DRAFT_ORDER] userErrors:", userErrors);
       return res.status(400).json({
         ok: false,
         message: userErrors[0]?.message || "Shopify returned user errors.",
