@@ -2153,27 +2153,43 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     // Extract product handle from queryFrom URL (e.g. ".../products/embroidered-patches" → "embroidered-patches")
     const productHandle = queryFrom ? queryFrom.match(/\/products\/([^/?#]+)/)?.[1] ?? null : null;
     let variantId = null;
+    let variantPrice = null;
     if (productHandle) {
       const productQuery = `
         query findProduct($handle: String!) {
           productByHandle(handle: $handle) {
             variants(first: 1) {
               edges {
-                node { id }
+                node {
+                  id
+                  price
+                }
               }
             }
           }
         }
       `;
       const productData = await shopifyAdminGraphql(productQuery, { handle: productHandle });
-      console.log("[DRAFT_ORDER] productData:", JSON.stringify(productData, null, 2));
-      variantId = productData?.productByHandle?.variants?.edges?.[0]?.node?.id ?? null;
+      const variantNode = productData?.productByHandle?.variants?.edges?.[0]?.node;
+      variantId    = variantNode?.id ?? null;
+      variantPrice = variantNode?.price ? parseFloat(variantNode.price) : null;
     }
-    console.log("[DRAFT_ORDER] resolved variantId:", variantId);
+    console.log("[DRAFT_ORDER] resolved variantId:", variantId, "variantPrice:", variantPrice);
 
     if (variantId) {
       input.lineItems[0].variantId = variantId;
       delete input.lineItems[0].title;
+      delete input.lineItems[0].originalUnitPrice;
+
+      // Apply a fixed discount per item so the customer pays unitPrice, not the variant's list price.
+      if (variantPrice !== null && variantPrice > parseFloat(unitPrice)) {
+        const discountAmount = (variantPrice - parseFloat(unitPrice)).toFixed(2);
+        input.lineItems[0].appliedDiscount = {
+          valueType: "FIXED_AMOUNT",
+          value:     parseFloat(discountAmount),
+          title:     "Custom Quote Price",
+        };
+      }
     }
     console.log("[DRAFT_ORDER] final input:", JSON.stringify(input, null, 2));
 
