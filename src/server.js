@@ -2477,14 +2477,14 @@ app.post("/api/shopify/products", async (req, res) => {
               name: "available"
               reason: "correction"
               referenceDocumentUri: "gid://your-app/InitialStock/1"
-              quantities: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, quantity: $quantity }]
+              quantities: [{ inventoryItemId: $inventoryItemId, locationId: $locationId, quantity: $quantity, changeFromQuantity: 0 }]
             }
           ) {
             inventoryAdjustmentGroup { id reason changes { name delta quantityAfterChange } }
             userErrors { code field message }
           }
         }
-      `, { inventoryItemId, locationId, quantity: parseInt(quantity, 10) });
+      `, { inventoryItemId, locationId, quantity: 10 });
 
       if (invData.inventorySetQuantities.userErrors?.length > 0) {
         console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
