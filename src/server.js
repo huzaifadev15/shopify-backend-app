@@ -2396,7 +2396,7 @@ app.post("/api/shopify/products", async (req, res) => {
     background && { namespace: "custom", key: "background", value: String(background), type: "single_line_text_field" },
     border            && { namespace: "custom", key: "border",            value: String(border),            type: "single_line_text_field" },
     color             && { namespace: "custom", key: "color",             value: String(color),             type: "single_line_text_field" },
-    product_quantity  && { namespace: "custom", key: "product_quantity",  value: String(product_quantity),  type: "single_line_text_field" },
+    product_quantity  && { namespace: "custom", key: "product_quantity",  value: String(parseInt(product_quantity, 10)),  type: "number_integer" },
   ].filter(Boolean);
 
   const productInput = {
