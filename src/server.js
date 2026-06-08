@@ -2014,11 +2014,13 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
   const gid = draftOrderId.startsWith("gid://") ? draftOrderId : `gid://shopify/DraftOrder/${draftOrderId}`;
 
   // Coerce lineItems numeric fields so string values from clients don't break Shopify
+  // Also default requiresShipping to true so shippingLine is accepted by Shopify
   if (Array.isArray(input.lineItems)) {
     input.lineItems = input.lineItems.map((item) => ({
       ...item,
       ...(item.quantity          != null && { quantity:          parseInt(item.quantity, 10) }),
       ...(item.originalUnitPrice != null && { originalUnitPrice: parseFloat(item.originalUnitPrice) }),
+      requiresShipping: item.requiresShipping !== false,
     }));
   }
 
