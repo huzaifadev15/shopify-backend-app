@@ -2022,6 +2022,23 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
     }));
   }
 
+  // Coerce shippingLine price to string decimal if provided
+  if (input.shippingLine) {
+    if (input.shippingLine.price != null) {
+      input.shippingLine = {
+        title: input.shippingLine.title,
+        price: String(parseFloat(input.shippingLine.price).toFixed(2)),
+      };
+    } else if (input.shippingLine.priceWithCurrency) {
+      input.shippingLine = {
+        title: input.shippingLine.title,
+        price: String(parseFloat(input.shippingLine.priceWithCurrency.amount).toFixed(2)),
+      };
+    }
+  }
+
+  console.log("[DRAFT_ORDER_UPDATE] input being sent to Shopify:", JSON.stringify(input, null, 2));
+
   try {
     const mutation = `
       mutation updateDraftOrder($input: DraftOrderInput!, $ownerId: ID!) {
