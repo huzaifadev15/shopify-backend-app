@@ -2369,6 +2369,12 @@ app.post("/api/shopify/products", async (req, res) => {
     variants,
     images,
     quantity = 100,
+    backing,
+    shape,
+    background,
+    border,
+    color,
+    product_quantity,
   } = req.body || {};
 
   if (!title) {
@@ -2384,14 +2390,24 @@ app.post("/api/shopify/products", async (req, res) => {
       }))
     : [];
 
+  const customMetafields = [
+    backing    && { namespace: "custom", key: "backing",    value: String(backing),    type: "single_line_text_field" },
+    shape      && { namespace: "custom", key: "shape",      value: String(shape),      type: "single_line_text_field" },
+    background && { namespace: "custom", key: "background", value: String(background), type: "single_line_text_field" },
+    border            && { namespace: "custom", key: "border",            value: String(border),            type: "single_line_text_field" },
+    color             && { namespace: "custom", key: "color",             value: String(color),             type: "single_line_text_field" },
+    product_quantity  && { namespace: "custom", key: "product_quantity",  value: String(product_quantity),  type: "single_line_text_field" },
+  ].filter(Boolean);
+
   const productInput = {
     title,
     status: "ACTIVE",
-    ...(templateSuffix && { templateSuffix }),
-    ...(vendor         && { vendor }),
-    ...(productType    && { productType }),
-    ...(tags           && { tags }),
-    ...(options        && { productOptions: options }),
+    ...(templateSuffix          && { templateSuffix }),
+    ...(vendor                  && { vendor }),
+    ...(productType             && { productType }),
+    ...(tags                    && { tags }),
+    ...(options                 && { productOptions: options }),
+    ...(customMetafields.length && { metafields: customMetafields }),
   };
 
   let createdProduct;
