@@ -2024,7 +2024,7 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
 
   try {
     const mutation = `
-      mutation updateDraftOrderMetafields($input: DraftOrderInput!, $ownerId: ID!) {
+      mutation updateDraftOrder($input: DraftOrderInput!, $ownerId: ID!) {
         draftOrderUpdate(input: $input, id: $ownerId) {
           draftOrder {
             id
@@ -2033,6 +2033,15 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
             totalPrice
             invoiceUrl
             updatedAt
+            shippingLine {
+              title
+              discountedPriceSet {
+                shopMoney {
+                  amount
+                  currencyCode
+                }
+              }
+            }
             metafields(first: 10) {
               edges {
                 node {
@@ -2070,12 +2079,13 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
     return res.json({
       ok: true,
       draftOrder: {
-        id:         draftOrder?.id,
-        name:       draftOrder?.name,
-        status:     draftOrder?.status,
-        totalPrice: draftOrder?.totalPrice,
-        invoiceUrl: draftOrder?.invoiceUrl,
-        updatedAt:  draftOrder?.updatedAt,
+        id:           draftOrder?.id,
+        name:         draftOrder?.name,
+        status:       draftOrder?.status,
+        totalPrice:   draftOrder?.totalPrice,
+        invoiceUrl:   draftOrder?.invoiceUrl,
+        updatedAt:    draftOrder?.updatedAt,
+        shippingLine: draftOrder?.shippingLine ?? null,
         metafields,
       }
     });
