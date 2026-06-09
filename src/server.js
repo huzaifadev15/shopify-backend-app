@@ -2071,8 +2071,15 @@ app.post("/api/shopify/checkout", async (req, res) => {
     ].filter(Boolean).join("\n");
 
     // ── Step 3: create a hidden product (DRAFT — invisible on storefront) ──────
-    const mediaInput = imageUrl
-      ? [{ originalSource: imageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+    // Normalise imageUrl — relative paths get the store domain prepended
+    const resolvedImageUrl = imageUrl
+      ? imageUrl.startsWith("http")
+        ? imageUrl
+        : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
+      : "";
+
+    const mediaInput = resolvedImageUrl
+      ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
       : [];
 
     const productData = await shopifyAdminGraphql(`
