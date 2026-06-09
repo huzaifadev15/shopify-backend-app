@@ -2078,19 +2078,14 @@ app.post("/api/shopify/checkout", async (req, res) => {
       `Quote Token: ${quoteToken}`,
     ].filter(Boolean).join("\n");
 
-    // ── Step 3: create a hidden product with exact quote price ────────────────
-    // status: DRAFT keeps it off the storefront entirely.
-    // The variant price IS the exact custom price — no discounts needed.
+    // ── Step 3: create a hidden product (DRAFT — invisible on storefront) ──────
     const createProductMutation = `
       mutation productCreate($input: ProductInput!) {
         productCreate(input: $input) {
           product {
             id
             variants(first: 1) {
-              nodes {
-                id
-                price
-              }
+              nodes { id }
             }
           }
           userErrors { field message }
@@ -2101,20 +2096,10 @@ app.post("/api/shopify/checkout", async (req, res) => {
     const productInput = {
       title:  productTitle,
       status: "DRAFT",
-      bodyHtml: descriptionLines.replace(/\n/g, "<br/>"),
-      variants: [
-        {
-          price:             unitPrice.toFixed(2),
-          sku:               `PATCH-${Date.now()}`,
-          inventoryManagement: null,
-          requiresShipping:  true,
-          taxable:           true,
-        }
-      ],
-      tags: ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
+      tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
     };
 
-    const productData = await shopifyAdminGraphql(createProductMutation, { input: productInput });
+    const productData   = await shopifyAdminGraphql(createProductMutation, { input: productInput });
     const productResult = productData?.productCreate;
     const productErrors = productResult?.userErrors || [];
 
@@ -2133,6 +2118,35 @@ app.post("/api/shopify/checkout", async (req, res) => {
       return res.status(502).json({
         ok: false,
         message: "Product created but variant ID not returned."
+      });
+    }
+
+    // ── Step 4: update the default variant with exact price + SKU ─────────────
+    const updateVariantMutation = `
+      mutation productVariantUpdate($input: ProductVariantInput!) {
+        productVariantUpdate(input: $input) {
+          productVariant { id price sku }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const variantData   = await shopifyAdminGraphql(updateVariantMutation, {
+      input: {
+        id:               createdVariant.id,
+        price:            unitPrice.toFixed(2),
+        sku:              `PATCH-${Date.now()}`,
+        requiresShipping: true,
+        taxable:          true,
+      }
+    });
+    const variantErrors = variantData?.productVariantUpdate?.userErrors || [];
+
+    if (variantErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: variantErrors[0]?.message || "Failed to set variant price.",
+        userErrors: variantErrors
       });
     }
 
