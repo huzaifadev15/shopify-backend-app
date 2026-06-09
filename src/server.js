@@ -2134,7 +2134,6 @@ app.post("/api/shopify/checkout", async (req, res) => {
       variants: [{
         id:    createdVariant.id,
         price: unitPrice.toFixed(2),
-        sku:   `PATCH-${Date.now()}`,
       }]
     });
     const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
