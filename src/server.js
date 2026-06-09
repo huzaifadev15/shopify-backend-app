@@ -2121,26 +2121,23 @@ app.post("/api/shopify/checkout", async (req, res) => {
       });
     }
 
-    // ── Step 4: update the default variant with exact price + SKU ─────────────
-    const updateVariantMutation = `
-      mutation productVariantUpdate($input: ProductVariantInput!) {
-        productVariantUpdate(input: $input) {
-          productVariant { id price sku }
+    // ── Step 4: set exact price on the default variant ────────────────────────
+    const variantData   = await shopifyAdminGraphql(`
+      mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants { id price sku }
           userErrors { field message }
         }
       }
-    `;
-
-    const variantData   = await shopifyAdminGraphql(updateVariantMutation, {
-      input: {
-        id:               createdVariant.id,
-        price:            unitPrice.toFixed(2),
-        sku:              `PATCH-${Date.now()}`,
-        requiresShipping: true,
-        taxable:          true,
-      }
+    `, {
+      productId: createdProduct.id,
+      variants: [{
+        id:    createdVariant.id,
+        price: unitPrice.toFixed(2),
+        sku:   `PATCH-${Date.now()}`,
+      }]
     });
-    const variantErrors = variantData?.productVariantUpdate?.userErrors || [];
+    const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
 
     if (variantErrors.length) {
       return res.status(400).json({
