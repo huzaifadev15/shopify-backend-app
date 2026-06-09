@@ -2258,20 +2258,14 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
     }));
   }
 
-  // Coerce shippingLine price to string decimal if provided
-  if (input.shippingLine) {
-    if (input.shippingLine.price != null) {
-      input.shippingLine = {
-        title: input.shippingLine.title,
-        price: String(parseFloat(input.shippingLine.price).toFixed(2)),
-      };
-    } else if (input.shippingLine.priceWithCurrency) {
-      input.shippingLine = {
-        title: input.shippingLine.title,
-        price: String(parseFloat(input.shippingLine.priceWithCurrency.amount).toFixed(2)),
-      };
-    }
-  }
+  // Auto-set shipping based on total quantity — overrides anything sent from client
+  const totalQty = Array.isArray(input.lineItems)
+    ? input.lineItems.reduce((sum, item) => sum + (parseInt(item.quantity, 10) || 0), 0)
+    : 0;
+
+  input.shippingLine = totalQty > 0 && totalQty < 100
+    ? { title: "Standard Shipping", price: "29.99" }
+    : { title: "Free Shipping",     price: "0.00"  };
 
   console.log("[DRAFT_ORDER_UPDATE] input being sent to Shopify:", JSON.stringify(input, null, 2));
 
