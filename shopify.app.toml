@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "c7cfadd499c03a1471392d360a91b498"
+client_id = "94e7cc12d077c88036cbd9dfe28d2da9"
 name = "patches"
-application_url = "https://unfaulty-untwirled-aleisha.ngrok-free.dev"
+application_url = "https://shopify-backend-app-omega.vercel.app/"
 embedded = true
 
 [webhooks]
