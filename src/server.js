@@ -2146,16 +2146,69 @@ app.post("/api/shopify/checkout", async (req, res) => {
       });
     }
 
-    // Extract numeric variant ID from GID for cart permalink
-    // gid://shopify/ProductVariant/12345678  →  12345678
-    const numericVariantId = createdVariant.id.split("/").pop();
-    const cartUrl = `https://${SHOP_DOMAIN}/cart/${numericVariantId}:${qty}`;
+    // ── Step 5: create draft order using the variant (price is already exact) ──
+    // DRAFT products can't be added via cart permalink, but draft order invoiceUrl
+    // works regardless of product status. Since variant price = custom quote price,
+    // Shopify uses it directly — no discount override needed.
+    const draftData = await shopifyAdminGraphql(`
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            totalPrice
+            invoiceUrl
+          }
+          userErrors { field message }
+        }
+      }
+    `, {
+      input: {
+        lineItems: [{
+          variantId: createdVariant.id,
+          quantity:  qty,
+          customAttributes: [
+            { key: "_quote_token", value: quoteToken },
+            { key: "Patch Type",   value: patchType },
+            { key: "Size",         value: size },
+            ...(shape   ? [{ key: "Shape",   value: shape   }] : []),
+            ...(backing ? [{ key: "Backing", value: backing }] : []),
+            ...(border  ? [{ key: "Border",  value: border  }] : []),
+            ...(colors  ? [{ key: "Colors",  value: colors  }] : []),
+            { key: "Quantity",   value: String(qty) },
+            { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
+          ]
+        }],
+        note: productTitle,
+      }
+    });
+
+    const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
+    if (draftErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: draftErrors[0]?.message || "Failed to create draft order.",
+        userErrors: draftErrors
+      });
+    }
+
+    const draftOrder = draftData?.draftOrderCreate?.draftOrder;
+    if (!draftOrder?.invoiceUrl) {
+      return res.status(502).json({
+        ok: false,
+        message: "Draft order created but invoiceUrl not returned.",
+        draftOrder
+      });
+    }
 
     return res.json({
       ok: true,
-      cartUrl,
-      variantId:  createdVariant.id,
-      productId:  createdProduct.id,
+      invoiceUrl: draftOrder.invoiceUrl,
+      draftOrder: {
+        id:         draftOrder.id,
+        name:       draftOrder.name,
+        totalPrice: draftOrder.totalPrice,
+      },
       quote: {
         unitPrice,
         total,
