@@ -2021,6 +2021,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
   const {
     productName = "",
     quantity,
+    unitPrice: rawUnitPrice,
     width  = 2,
     height = 2.19,
     options = {}
@@ -2031,26 +2032,16 @@ app.post("/api/shopify/checkout", async (req, res) => {
   const parsedWidth  = Math.max(1, Number(width)  || 1);
 
   try {
-    // ── Step 1: calculate quote price ─────────────────────────────────────────
-    const pricingRows = await getPricing();
-    const matchedRows = matchRows(pricingRows, productName);
-    const quote       = quoteFromRows(matchedRows, { height: parsedHeight, qty });
-
-    if (!quote) {
-      return res.status(404).json({
-        ok: false,
-        message: "No pricing found for this product/size/qty combination."
-      });
+    // ── Step 1: use unit price from payload ───────────────────────────────────
+    const unitPrice = Number(Number(rawUnitPrice || 0).toFixed(2));
+    if (!unitPrice || unitPrice <= 0) {
+      return res.status(400).json({ ok: false, message: "unitPrice is required and must be greater than 0." });
     }
-
-    const backingPrice = Math.max(0, Number(options.backingPrice) || 0);
-    const unitPrice    = Number((quote.unitPrice + backingPrice).toFixed(2));
-    const total        = Number((unitPrice * qty).toFixed(2));
+    const total = Number((unitPrice * qty).toFixed(2));
 
     const quotePayload = {
       productName, width: parsedWidth, height: parsedHeight,
       qty, unitPrice, total,
-      sizeUsed: quote.sizeUsed, tierQty: quote.tierQty,
       ts: Date.now(), options
     };
     const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
