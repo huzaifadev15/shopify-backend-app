@@ -1998,51 +1998,43 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
 });
 
 // ── POST /api/shopify/checkout ────────────────────────────────────────────────
-// Creates a draft order from patch config + quote data and returns invoiceUrl
-// for immediate customer redirect. Keeps /api/shopify/draft-orders intact for
-// the admin quote-request flow.
+// Creates a hidden (DRAFT) Shopify product with the exact quote price and all
+// patch configuration baked into the variant, then returns a cart permalink URL
+// for immediate customer redirect to the normal Shopify checkout.
 //
 // Body:
 // {
-//   variantId:   "gid://shopify/ProductVariant/123",  // required
-//   productName: "Embroidered Patch",                  // for quote lookup
-//   quantity:    50,
-//   width:       3,
-//   height:      3,
-//   email:       "customer@example.com",               // optional
-//   options: {                                         // patch config for line attributes
-//     patchType:  "Embroidered",
-//     shape:      "Circle",
-//     backing:    "Heat Applied",
+//   productName:  "Embroidered Patch",   // for quote pricing lookup
+//   quantity:     50,
+//   width:        3,
+//   height:       3,
+//   options: {
+//     patchType:    "Embroidered",
+//     shape:        "Circle",
+//     backing:      "Heat Applied",
 //     backingPrice: 0.50,
-//     border:     "Merrow",
-//     colors:     "5"
+//     border:       "Merrow",
+//     colors:       "5"
 //   }
 // }
 app.post("/api/shopify/checkout", async (req, res) => {
   const {
-    variantId,
     productName = "",
     quantity,
-    width = 2,
+    width  = 2,
     height = 2.19,
-    email,
     options = {}
   } = req.body || {};
 
-  if (!variantId) {
-    return res.status(400).json({ ok: false, message: "variantId is required." });
-  }
-  const qty = Math.max(10, Number(quantity) || 10);
+  const qty          = Math.max(10, Number(quantity) || 10);
+  const parsedHeight = Math.max(1, Number(height) || 1);
+  const parsedWidth  = Math.max(1, Number(width)  || 1);
 
   try {
     // ── Step 1: calculate quote price ─────────────────────────────────────────
-    const parsedHeight = Math.max(1, Number(height) || 1);
-    const parsedWidth  = Math.max(1, Number(width)  || 1);
-
-    const pricingRows  = await getPricing();
-    const matchedRows  = matchRows(pricingRows, productName);
-    const quote        = quoteFromRows(matchedRows, { height: parsedHeight, qty });
+    const pricingRows = await getPricing();
+    const matchedRows = matchRows(pricingRows, productName);
+    const quote       = quoteFromRows(matchedRows, { height: parsedHeight, qty });
 
     if (!quote) {
       return res.status(404).json({
@@ -2051,12 +2043,11 @@ app.post("/api/shopify/checkout", async (req, res) => {
       });
     }
 
-    // Add any per-unit option surcharges (e.g. backing +$0.50)
-    const backingPrice  = Math.max(0, Number(options.backingPrice) || 0);
-    const unitPrice     = Number((quote.unitPrice + backingPrice).toFixed(2));
-    const total         = Number((unitPrice * qty).toFixed(2));
+    const backingPrice = Math.max(0, Number(options.backingPrice) || 0);
+    const unitPrice    = Number((quote.unitPrice + backingPrice).toFixed(2));
+    const total        = Number((unitPrice * qty).toFixed(2));
 
-    const quotePayload  = {
+    const quotePayload = {
       productName, width: parsedWidth, height: parsedHeight,
       qty, unitPrice, total,
       sizeUsed: quote.sizeUsed, tierQty: quote.tierQty,
@@ -2064,89 +2055,97 @@ app.post("/api/shopify/checkout", async (req, res) => {
     };
     const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
 
-    // ── Step 2: build line item attributes from patch options ─────────────────
-    const customAttributes = [
-      { key: "_quote_token",   value: quoteToken },
-      { key: "quote_qty",      value: String(qty) },
-      { key: "quote_height",   value: String(parsedHeight) },
-      { key: "quote_width",    value: String(parsedWidth) },
-      { key: "Unit Price",     value: `$${unitPrice.toFixed(2)}` },
-    ];
+    // ── Step 2: build a readable product title + description ─────────────────
+    const patchType  = options.patchType  || productName || "Custom Patch";
+    const size       = options.size       || `${parsedWidth}" x ${parsedHeight}"`;
+    const shape      = options.shape      || "";
+    const backing    = options.backing    || "";
+    const border     = options.border     || "";
+    const colors     = options.colors     || "";
 
-    const optionLabels = {
-      patchType:    "Patch Type",
-      shape:        "Shape",
-      backing:      "Backing",
-      border:       "Border",
-      colors:       "Colors",
-      size:         "Size",
-    };
-    for (const [key, label] of Object.entries(optionLabels)) {
-      if (options[key]) customAttributes.push({ key: label, value: String(options[key]) });
-    }
+    const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
 
-    // ── Step 3: create draft order ────────────────────────────────────────────
-    const draftInput = {
-      lineItems: [
-        {
-          variantId,
-          quantity: qty,
-          originalUnitPrice: unitPrice.toFixed(2),
-          customAttributes,
-        }
-      ],
-      ...(email ? { email } : {}),
-      note: `Custom patch order — ${qty} pcs${options.patchType ? `, ${options.patchType}` : ""}${parsedHeight ? `, ${parsedHeight}"` : ""}`,
-    };
+    const descriptionLines = [
+      `Patch Type: ${patchType}`,
+      `Size: ${size}`,
+      shape   ? `Shape: ${shape}`   : null,
+      backing ? `Backing: ${backing}` : null,
+      border  ? `Border: ${border}`  : null,
+      colors  ? `Colors: ${colors}`  : null,
+      `Quantity: ${qty}`,
+      `Unit Price: $${unitPrice.toFixed(2)}`,
+      `Total: $${total.toFixed(2)}`,
+      `Quote Token: ${quoteToken}`,
+    ].filter(Boolean).join("\n");
 
-    const mutation = `
-      mutation draftOrderCreate($input: DraftOrderInput!) {
-        draftOrderCreate(input: $input) {
-          draftOrder {
+    // ── Step 3: create a hidden product with exact quote price ────────────────
+    // status: DRAFT keeps it off the storefront entirely.
+    // The variant price IS the exact custom price — no discounts needed.
+    const createProductMutation = `
+      mutation productCreate($input: ProductInput!) {
+        productCreate(input: $input) {
+          product {
             id
-            name
-            status
-            totalPrice
-            invoiceUrl
-            createdAt
+            variants(first: 1) {
+              nodes {
+                id
+                price
+              }
+            }
           }
-          userErrors {
-            field
-            message
-          }
+          userErrors { field message }
         }
       }
     `;
 
-    const data       = await shopifyAdminGraphql(mutation, { input: draftInput });
-    const result     = data?.draftOrderCreate;
-    const userErrors = result?.userErrors || [];
+    const productInput = {
+      title:  productTitle,
+      status: "DRAFT",
+      bodyHtml: descriptionLines.replace(/\n/g, "<br/>"),
+      variants: [
+        {
+          price:             unitPrice.toFixed(2),
+          sku:               `PATCH-${Date.now()}`,
+          inventoryManagement: null,
+          requiresShipping:  true,
+          taxable:           true,
+        }
+      ],
+      tags: ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
+    };
 
-    if (userErrors.length) {
+    const productData = await shopifyAdminGraphql(createProductMutation, { input: productInput });
+    const productResult = productData?.productCreate;
+    const productErrors = productResult?.userErrors || [];
+
+    if (productErrors.length) {
       return res.status(400).json({
         ok: false,
-        message: userErrors[0]?.message || "Shopify returned user errors.",
-        userErrors
+        message: productErrors[0]?.message || "Failed to create product.",
+        userErrors: productErrors
       });
     }
 
-    const draftOrder = result?.draftOrder;
-    if (!draftOrder?.invoiceUrl) {
+    const createdProduct = productResult?.product;
+    const createdVariant = createdProduct?.variants?.nodes?.[0];
+
+    if (!createdVariant?.id) {
       return res.status(502).json({
         ok: false,
-        message: "Draft order created but Shopify did not return an invoiceUrl.",
-        draftOrder
+        message: "Product created but variant ID not returned."
       });
     }
+
+    // Extract numeric variant ID from GID for cart permalink
+    // gid://shopify/ProductVariant/12345678  →  12345678
+    const numericVariantId = createdVariant.id.split("/").pop();
+    const cartUrl = `https://${SHOP_DOMAIN}/cart/${numericVariantId}:${qty}`;
 
     return res.json({
       ok: true,
-      invoiceUrl:  draftOrder.invoiceUrl,
-      draftOrder: {
-        id:         draftOrder.id,
-        name:       draftOrder.name,
-        totalPrice: draftOrder.totalPrice,
-      },
+      cartUrl,
+      variantId:  createdVariant.id,
+      productId:  createdProduct.id,
       quote: {
         unitPrice,
         total,
