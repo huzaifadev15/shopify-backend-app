@@ -2022,6 +2022,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
     productName = "",
     quantity,
     unitPrice: rawUnitPrice,
+    imageUrl = "",
     width  = 2,
     height = 2.19,
     options = {}
@@ -2070,9 +2071,13 @@ app.post("/api/shopify/checkout", async (req, res) => {
     ].filter(Boolean).join("\n");
 
     // ── Step 3: create a hidden product (DRAFT — invisible on storefront) ──────
-    const createProductMutation = `
-      mutation productCreate($input: ProductInput!) {
-        productCreate(input: $input) {
+    const mediaInput = imageUrl
+      ? [{ originalSource: imageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+      : [];
+
+    const productData = await shopifyAdminGraphql(`
+      mutation CreateCheckoutProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+        productCreate(product: $product, media: $media) {
           product {
             id
             variants(first: 1) {
@@ -2082,17 +2087,17 @@ app.post("/api/shopify/checkout", async (req, res) => {
           userErrors { field message }
         }
       }
-    `;
-
-    const productInput = {
-      title:  productTitle,
-      status: "DRAFT",
-      tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
-    };
-
-    const productData   = await shopifyAdminGraphql(createProductMutation, { input: productInput });
+    `, {
+      product: {
+        title:  productTitle,
+        status: "DRAFT",
+        tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
+      },
+      media: mediaInput
+    });
     const productResult = productData?.productCreate;
     const productErrors = productResult?.userErrors || [];
+
 
     if (productErrors.length) {
       return res.status(400).json({
