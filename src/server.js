@@ -1997,6 +1997,172 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/checkout ────────────────────────────────────────────────
+// Creates a draft order from patch config + quote data and returns invoiceUrl
+// for immediate customer redirect. Keeps /api/shopify/draft-orders intact for
+// the admin quote-request flow.
+//
+// Body:
+// {
+//   variantId:   "gid://shopify/ProductVariant/123",  // required
+//   productName: "Embroidered Patch",                  // for quote lookup
+//   quantity:    50,
+//   width:       3,
+//   height:      3,
+//   email:       "customer@example.com",               // optional
+//   options: {                                         // patch config for line attributes
+//     patchType:  "Embroidered",
+//     shape:      "Circle",
+//     backing:    "Heat Applied",
+//     backingPrice: 0.50,
+//     border:     "Merrow",
+//     colors:     "5"
+//   }
+// }
+app.post("/api/shopify/checkout", async (req, res) => {
+  const {
+    variantId,
+    productName = "",
+    quantity,
+    width = 2,
+    height = 2.19,
+    email,
+    options = {}
+  } = req.body || {};
+
+  if (!variantId) {
+    return res.status(400).json({ ok: false, message: "variantId is required." });
+  }
+  const qty = Math.max(10, Number(quantity) || 10);
+
+  try {
+    // ── Step 1: calculate quote price ─────────────────────────────────────────
+    const parsedHeight = Math.max(1, Number(height) || 1);
+    const parsedWidth  = Math.max(1, Number(width)  || 1);
+
+    const pricingRows  = await getPricing();
+    const matchedRows  = matchRows(pricingRows, productName);
+    const quote        = quoteFromRows(matchedRows, { height: parsedHeight, qty });
+
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        message: "No pricing found for this product/size/qty combination."
+      });
+    }
+
+    // Add any per-unit option surcharges (e.g. backing +$0.50)
+    const backingPrice  = Math.max(0, Number(options.backingPrice) || 0);
+    const unitPrice     = Number((quote.unitPrice + backingPrice).toFixed(2));
+    const total         = Number((unitPrice * qty).toFixed(2));
+
+    const quotePayload  = {
+      productName, width: parsedWidth, height: parsedHeight,
+      qty, unitPrice, total,
+      sizeUsed: quote.sizeUsed, tierQty: quote.tierQty,
+      ts: Date.now(), options
+    };
+    const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
+
+    // ── Step 2: build line item attributes from patch options ─────────────────
+    const customAttributes = [
+      { key: "_quote_token",   value: quoteToken },
+      { key: "quote_qty",      value: String(qty) },
+      { key: "quote_height",   value: String(parsedHeight) },
+      { key: "quote_width",    value: String(parsedWidth) },
+      { key: "Unit Price",     value: `$${unitPrice.toFixed(2)}` },
+    ];
+
+    const optionLabels = {
+      patchType:    "Patch Type",
+      shape:        "Shape",
+      backing:      "Backing",
+      border:       "Border",
+      colors:       "Colors",
+      size:         "Size",
+    };
+    for (const [key, label] of Object.entries(optionLabels)) {
+      if (options[key]) customAttributes.push({ key: label, value: String(options[key]) });
+    }
+
+    // ── Step 3: create draft order ────────────────────────────────────────────
+    const draftInput = {
+      lineItems: [
+        {
+          variantId,
+          quantity: qty,
+          originalUnitPrice: unitPrice.toFixed(2),
+          customAttributes,
+        }
+      ],
+      ...(email ? { email } : {}),
+      note: `Custom patch order — ${qty} pcs${options.patchType ? `, ${options.patchType}` : ""}${parsedHeight ? `, ${parsedHeight}"` : ""}`,
+    };
+
+    const mutation = `
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            status
+            totalPrice
+            invoiceUrl
+            createdAt
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const data       = await shopifyAdminGraphql(mutation, { input: draftInput });
+    const result     = data?.draftOrderCreate;
+    const userErrors = result?.userErrors || [];
+
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors
+      });
+    }
+
+    const draftOrder = result?.draftOrder;
+    if (!draftOrder?.invoiceUrl) {
+      return res.status(502).json({
+        ok: false,
+        message: "Draft order created but Shopify did not return an invoiceUrl.",
+        draftOrder
+      });
+    }
+
+    return res.json({
+      ok: true,
+      invoiceUrl:  draftOrder.invoiceUrl,
+      draftOrder: {
+        id:         draftOrder.id,
+        name:       draftOrder.name,
+        totalPrice: draftOrder.totalPrice,
+      },
+      quote: {
+        unitPrice,
+        total,
+        qty,
+        quoteToken
+      }
+    });
+
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to create checkout."
+    });
+  }
+});
+
 // ── PUT /api/shopify/draft-orders/:draftOrderId ──────────────────────────────
 // Updates an existing Shopify draft order via the GraphQL draftOrderUpdate mutation.
 // draftOrderId can be a numeric ID or full GID. Body: { input: DraftOrderInput }
