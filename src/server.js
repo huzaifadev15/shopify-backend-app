@@ -2170,6 +2170,9 @@ app.post("/api/shopify/checkout", async (req, res) => {
             { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
           ]
         }],
+        shippingLine: qty < 100
+          ? { title: "Standard Shipping", price: "30.00" }
+          : { title: "Free Shipping",     price: "0.00"  },
         note: productTitle,
       }
     });
