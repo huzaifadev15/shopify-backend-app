@@ -2364,6 +2364,13 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     queryFrom,
     notes,
     customerName,
+    firstCampaign,
+    firstMedium,
+    firstSource,
+    isFine,
+    lastCampaign,
+    lastMedium,
+    lastSource,
   } = req.body || {};
 
   const required = { email, patchType, quantity, unitPrice, subTotal };
@@ -2467,6 +2474,13 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
           uploadedFiles,
           notes,
           customerName,
+          firstCampaign,
+          firstMedium,
+          firstSource,
+          isFine,
+          lastCampaign,
+          lastMedium,
+          lastSource,
           shopifyOrderId: draftOrder?.id,
           invoiceUrl:     draftOrder?.invoiceUrl,
           storeType:      "shopify",
