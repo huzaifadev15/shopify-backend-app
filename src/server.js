@@ -2504,7 +2504,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 
 // ── POST /api/shopify/draft-orders/manual ────────────────────────────────────
 // Creates a DRAFT product from manual order fields, then creates a draft order.
-// Body: { shipping, quantity, backing, broder, border, productImage, price? }
+// Body: { shipping, quantity, backing, broder, border, productImage, price?, email?, customerName? }
 app.post("/api/shopify/draft-orders/manual", async (req, res) => {
   const {
     shipping,
@@ -2514,6 +2514,8 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     border,
     productImage,
     price,
+    email,
+    customerName,
   } = req.body || {};
 
   const qty = parseInt(quantity, 10);
@@ -2641,6 +2643,11 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         }],
         shippingLine,
         note: productTitle,
+        ...(email && { email }),
+        ...(customerName && {
+          shippingAddress: { firstName: customerName },
+          billingAddress:  { firstName: customerName },
+        }),
       },
     });
 
@@ -2680,10 +2687,14 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 // orderId can be a numeric ID or full GID (gid://shopify/DraftOrder/123).
 app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
   const { orderId } = req.params;
-  const { customMessage } = req.body || {};
+  const { customMessage, to } = req.body || {};
 
   if (!orderId) {
     return res.status(400).json({ ok: false, message: "orderId is required." });
+  }
+
+  if (!to) {
+    return res.status(400).json({ ok: false, message: "to (customer email) is required." });
   }
 
   const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/DraftOrder/${orderId}`;
@@ -2704,7 +2715,10 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
 
     const variables = {
       id: gid,
-      ...(customMessage && { email: { customMessage: String(customMessage) } }),
+      email: {
+        to: String(to),
+        ...(customMessage && { customMessage: String(customMessage) }),
+      },
     };
 
     const data = await shopifyAdminGraphql(mutation, variables);
