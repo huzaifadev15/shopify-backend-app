@@ -2502,6 +2502,179 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/draft-orders/manual ────────────────────────────────────
+// Creates a DRAFT product from manual order fields, then creates a draft order.
+// Body: { shipping, quantity, backing, broder, border, productImage, price? }
+app.post("/api/shopify/draft-orders/manual", async (req, res) => {
+  const {
+    shipping,
+    quantity,
+    backing,
+    broder,
+    border,
+    productImage,
+    price,
+  } = req.body || {};
+
+  const qty = parseInt(quantity, 10);
+  if (!qty || qty < 1) {
+    return res.status(400).json({ ok: false, message: "quantity must be a positive integer." });
+  }
+
+  try {
+    // ── Step 1: build product title + description ─────────────────────────────
+    const borderValue  = border || broder || "";
+    const productTitle = [
+      "Manual Order",
+      `Qty: ${qty}`,
+      backing     ? `Backing: ${backing}`     : null,
+      borderValue ? `Border: ${borderValue}`  : null,
+    ].filter(Boolean).join(" | ");
+
+    const descriptionLines = [
+      `Quantity: ${qty}`,
+      backing     ? `Backing: ${backing}`     : null,
+      borderValue ? `Border: ${borderValue}`  : null,
+      shipping    ? `Shipping: ${shipping}`   : null,
+    ].filter(Boolean).join("\n");
+
+    // ── Step 2: resolve image ─────────────────────────────────────────────────
+    const resolvedImageUrl = productImage
+      ? productImage.startsWith("http")
+        ? productImage
+        : `https://${SHOP_DOMAIN}${productImage.startsWith("/") ? "" : "/"}${productImage}`
+      : null;
+
+    const mediaInput = resolvedImageUrl
+      ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+      : [];
+
+    // ── Step 3: create DRAFT product ─────────────────────────────────────────
+    const productData = await shopifyAdminGraphql(`
+      mutation CreateManualProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+        productCreate(product: $product, media: $media) {
+          product {
+            id
+            variants(first: 1) { nodes { id } }
+          }
+          userErrors { field message }
+        }
+      }
+    `, {
+      product: {
+        title:       productTitle,
+        descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
+        status:      "DRAFT",
+        tags:        ["manual-order", `qty-${qty}`],
+      },
+      media: mediaInput,
+    });
+
+    const productErrors = productData?.productCreate?.userErrors || [];
+    if (productErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: productErrors[0]?.message || "Failed to create product.",
+        userErrors: productErrors,
+      });
+    }
+
+    const createdProduct = productData?.productCreate?.product;
+    const createdVariant = createdProduct?.variants?.nodes?.[0];
+    if (!createdVariant?.id) {
+      return res.status(502).json({ ok: false, message: "Product created but variant ID not returned." });
+    }
+
+    // ── Step 4: set variant price (use provided price or default to 0.00) ─────
+    const unitPrice = parseFloat(price) || 0;
+    const variantData = await shopifyAdminGraphql(`
+      mutation SetVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+          productVariants { id price }
+          userErrors { field message }
+        }
+      }
+    `, {
+      productId: createdProduct.id,
+      variants:  [{ id: createdVariant.id, price: unitPrice.toFixed(2) }],
+    });
+
+    const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
+    if (variantErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: variantErrors[0]?.message || "Failed to set variant price.",
+        userErrors: variantErrors,
+      });
+    }
+
+    // ── Step 5: build shipping line ───────────────────────────────────────────
+    const shippingLine = {
+      title: "Shipping",
+      price: shipping != null ? String(shipping) : "0.00",
+    };
+
+    // ── Step 6: create draft order ────────────────────────────────────────────
+    const draftData = await shopifyAdminGraphql(`
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            status
+            totalPrice
+            invoiceUrl
+          }
+          userErrors { field message }
+        }
+      }
+    `, {
+      input: {
+        lineItems: [{
+          variantId: createdVariant.id,
+          quantity:  qty,
+          customAttributes: [
+            { key: "Quantity",   value: String(qty) },
+            backing     ? { key: "Backing", value: backing }       : null,
+            borderValue ? { key: "Border",  value: borderValue }   : null,
+          ].filter(Boolean),
+        }],
+        shippingLine,
+        note: productTitle,
+      },
+    });
+
+    const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
+    if (draftErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: draftErrors[0]?.message || "Failed to create draft order.",
+        userErrors: draftErrors,
+      });
+    }
+
+    const draftOrder = draftData?.draftOrderCreate?.draftOrder;
+    return res.json({
+      ok:         true,
+      productId:  createdProduct.id,
+      draftOrder: {
+        id:         draftOrder?.id,
+        name:       draftOrder?.name,
+        status:     draftOrder?.status,
+        totalPrice: draftOrder?.totalPrice,
+        invoiceUrl: draftOrder?.invoiceUrl,
+      },
+    });
+
+  } catch (error) {
+    console.error("[MANUAL_DRAFT_ORDER]", error?.message);
+    return res.status(500).json({
+      ok:      false,
+      message: error?.message || "Failed to create manual draft order.",
+    });
+  }
+});
+
 // ── POST /api/shopify/orders/:orderId/send-invoice ───────────────────────────
 // Sends an invoice email for a Shopify draft order via draftOrderInvoiceSend mutation.
 // orderId can be a numeric ID or full GID (gid://shopify/DraftOrder/123).
