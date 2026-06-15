@@ -2258,14 +2258,6 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
     }));
   }
 
-  // Auto-set shipping based on total quantity — overrides anything sent from client
-  const totalQty = Array.isArray(input.lineItems)
-    ? input.lineItems.reduce((sum, item) => sum + (parseInt(item.quantity, 10) || 0), 0)
-    : 0;
-
-  input.shippingLine = totalQty > 0 && totalQty < 100
-    ? { title: "Standard Shipping", price: "29.99" }
-    : { title: "Free Shipping",     price: "0.00"  };
 
   console.log("[DRAFT_ORDER_UPDATE] input being sent to Shopify:", JSON.stringify(input, null, 2));
 
