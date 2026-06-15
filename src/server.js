@@ -2097,7 +2097,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
     `, {
       product: {
         title:  productTitle,
-        status: "DRAFT",
+        status: "ACTIVE",
         tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
       },
       media: mediaInput
@@ -2558,7 +2558,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
       product: {
         title:       productTitle,
         descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
-        status:      "DRAFT",
+        status:      "ACTIVE",
         tags:        ["manual-order", `qty-${qty}`],
       },
       media: mediaInput,
