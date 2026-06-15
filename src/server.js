@@ -2705,7 +2705,7 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
     const variables = {
       id: gid,
       email: {
-        to: String(to),
+        ...(to && { to: String(to) }),
         ...(customMessage && { customMessage: String(customMessage) }),
       },
     };
