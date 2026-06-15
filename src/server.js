@@ -2685,9 +2685,6 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
     return res.status(400).json({ ok: false, message: "orderId is required." });
   }
 
-  if (!to) {
-    return res.status(400).json({ ok: false, message: "to (customer email) is required." });
-  }
 
   const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/DraftOrder/${orderId}`;
 
