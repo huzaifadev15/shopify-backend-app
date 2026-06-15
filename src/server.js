@@ -168,6 +168,12 @@ function enforceAiRateLimit(req, res) {
 
 const SHOP_DOMAIN = normalizeShopDomain(SHOPIFY_SHOP_DOMAIN);
 
+function appendCheckoutParams(invoiceUrl) {
+  if (!invoiceUrl) return invoiceUrl;
+  const sep = invoiceUrl.includes("?") ? "&" : "?";
+  return `${invoiceUrl}${sep}auto_redirect=false&edge_redirect=true&skip_shop_pay=true`;
+}
+
 async function getPricing() {
   if (!pricingCache) pricingCache = await loadPricing(PRICING_FILE);
   return pricingCache;
@@ -2209,7 +2215,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
 
     return res.json({
       ok: true,
-      invoiceUrl: draftOrder.invoiceUrl,
+      invoiceUrl: appendCheckoutParams(draftOrder.invoiceUrl),
       draftOrder: {
         id:         draftOrder.id,
         name:       draftOrder.name,
@@ -2322,7 +2328,7 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
         name:         draftOrder?.name,
         status:       draftOrder?.status,
         totalPrice:   draftOrder?.totalPrice,
-        invoiceUrl:   draftOrder?.invoiceUrl,
+        invoiceUrl:   appendCheckoutParams(draftOrder?.invoiceUrl),
         updatedAt:    draftOrder?.updatedAt,
         shippingLine: draftOrder?.shippingLine ?? null,
         metafields,
@@ -2484,7 +2490,10 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 
     return res.json({
       ok: true,
-      draftOrder
+      draftOrder: {
+        ...draftOrder,
+        invoiceUrl: appendCheckoutParams(draftOrder?.invoiceUrl),
+      }
     });
   } catch (error) {
     return res.status(500).json({
@@ -2661,7 +2670,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         name:       draftOrder?.name,
         status:     draftOrder?.status,
         totalPrice: draftOrder?.totalPrice,
-        invoiceUrl: draftOrder?.invoiceUrl,
+        invoiceUrl: appendCheckoutParams(draftOrder?.invoiceUrl),
       },
     });
 
