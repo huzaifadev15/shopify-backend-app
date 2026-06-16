@@ -1856,6 +1856,90 @@ app.get("/api/upload", (_req, res) => {
   res.json({ message: "File upload endpoint — Shopify CDN" });
 });
 
+// Uploads raw bytes to Shopify's own Files storage (stagedUploadsCreate → PUT
+// → fileCreate) and returns the resulting cdn.shopify.com URL. Unlike a
+// remote URL passed straight into productCreate's media field, this gives
+// Shopify back exactly the bytes/content-type we send — no third-party CDN
+// content negotiation in between to cause mismatches.
+async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
+  const resource = mimetype.startsWith("image/") ? "IMAGE" : "FILE";
+
+  const stagedData = await shopifyAdminGraphql(
+    `mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets {
+          url
+          resourceUrl
+          parameters { name value }
+        }
+        userErrors { field message }
+      }
+    }`,
+    {
+      input: [{
+        filename:   fileName,
+        mimeType:   mimetype,
+        resource,
+        fileSize:   String(buffer.length),
+        httpMethod: "PUT",
+      }],
+    }
+  );
+
+  const stageErrors = stagedData.stagedUploadsCreate.userErrors;
+  if (stageErrors.length) {
+    const err = new Error(stageErrors[0].message);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const target = stagedData.stagedUploadsCreate.stagedTargets[0];
+
+  const uploadRes = await fetch(target.url, {
+    method:  "PUT",
+    headers: { "Content-Type": mimetype, "Content-Length": String(buffer.length) },
+    body:    buffer,
+  });
+
+  if (!uploadRes.ok) {
+    const text = await uploadRes.text().catch(() => "");
+    const err = new Error(`Shopify staged upload failed (${uploadRes.status})`);
+    err.statusCode = 502;
+    err.detail = text;
+    throw err;
+  }
+
+  const fileData = await shopifyAdminGraphql(
+    `mutation fileCreate($files: [FileCreateInput!]!) {
+      fileCreate(files: $files) {
+        files {
+          ... on MediaImage  { image { url } }
+          ... on GenericFile { url }
+        }
+        userErrors { field message }
+      }
+    }`,
+    {
+      files: [{
+        contentType:    resource,
+        originalSource: target.resourceUrl,
+        filename:       fileName,
+      }],
+    }
+  );
+
+  const fileErrors = fileData.fileCreate.userErrors;
+  if (fileErrors.length) {
+    const err = new Error(fileErrors[0].message);
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const createdFile = fileData.fileCreate.files[0];
+  const url = createdFile?.image?.url ?? createdFile?.url ?? target.resourceUrl;
+  return { url, resourceUrl: target.resourceUrl };
+}
+
 app.post("/api/upload", upload.single("file"), async (req, res) => {
   res.set("Access-Control-Allow-Origin", "*");
   try {
@@ -1864,90 +1948,20 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
     }
 
     const { originalname, mimetype, size, buffer } = req.file;
-    const fileName   = buildStoredFileName(originalname);
-    const resource   = mimetype.startsWith("image/") ? "IMAGE" : "FILE";
-
-    // ── Step 1: Ask Shopify for a pre-signed upload URL ───────────────────────
-    const stagedData = await shopifyAdminGraphql(
-      `mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-        stagedUploadsCreate(input: $input) {
-          stagedTargets {
-            url
-            resourceUrl
-            parameters { name value }
-          }
-          userErrors { field message }
-        }
-      }`,
-      {
-        input: [{
-          filename:   fileName,
-          mimeType:   mimetype,
-          resource,
-          fileSize:   String(size),
-          httpMethod: "PUT",
-        }],
-      }
-    );
-
-    const stageErrors = stagedData.stagedUploadsCreate.userErrors;
-    if (stageErrors.length) {
-      return res.status(400).json({ error: stageErrors[0].message });
-    }
-
-    const target = stagedData.stagedUploadsCreate.stagedTargets[0];
-
-    // ── Step 2: PUT the file bytes to the pre-signed URL ─────────────────────
-    const uploadRes = await fetch(target.url, {
-      method:  "PUT",
-      headers: { "Content-Type": mimetype, "Content-Length": String(size) },
-      body:    buffer,
-    });
-
-    if (!uploadRes.ok) {
-      const text = await uploadRes.text().catch(() => "");
-      return res.status(502).json({ error: `Shopify staged upload failed (${uploadRes.status})`, detail: text });
-    }
-
-    // ── Step 3: Register the file in Shopify Files so it gets a CDN URL ──────
-    const fileData = await shopifyAdminGraphql(
-      `mutation fileCreate($files: [FileCreateInput!]!) {
-        fileCreate(files: $files) {
-          files {
-            ... on MediaImage  { image { url } }
-            ... on GenericFile { url }
-          }
-          userErrors { field message }
-        }
-      }`,
-      {
-        files: [{
-          contentType:    resource,
-          originalSource: target.resourceUrl,
-          filename:       fileName,
-        }],
-      }
-    );
-
-    const fileErrors = fileData.fileCreate.userErrors;
-    if (fileErrors.length) {
-      return res.status(400).json({ error: fileErrors[0].message });
-    }
-
-    const createdFile = fileData.fileCreate.files[0];
-    const cdnUrl      = createdFile?.image?.url ?? createdFile?.url ?? target.resourceUrl;
+    const fileName = buildStoredFileName(originalname);
+    const { url: cdnUrl, resourceUrl } = await uploadBufferToShopifyFiles(buffer, mimetype, fileName);
 
     return res.json({
       success:     true,
       url:         cdnUrl,
-      resourceUrl: target.resourceUrl,
+      resourceUrl,
       fileName:    originalname,
       fileSize:    size,
       fileType:    mimetype,
     });
 
   } catch (error) {
-    return res.status(500).json({ error: error?.message || "Failed to upload file" });
+    return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to upload file", detail: error?.detail });
   }
 });
 
@@ -2072,9 +2086,32 @@ async function createCheckoutProductForItem(item) {
         : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
     : "";
 
-  const mediaInput = resolvedImageUrl
-    ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
-    : [];
+  // Re-host the image on Shopify's own Files storage instead of passing the
+  // remote storefront CDN URL straight through. Storefront CDN URLs (custom
+  // domain + Cloudflare) content-negotiate on the Accept header — a generic
+  // fetch (like Shopify's own media downloader) can get back bytes whose
+  // content-type doesn't match the URL's file extension, which Shopify's
+  // media processing rejects. Fetching with an explicit Accept header here
+  // and re-uploading guarantees Shopify gets bytes that match.
+  let mediaInput = [];
+  if (resolvedImageUrl) {
+    try {
+      const imgRes = await fetch(resolvedImageUrl, {
+        headers: { Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5" }
+      });
+      if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
+
+      const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+      const contentType = (imgRes.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
+      const ext          = contentType.split("/")[1] || "jpg";
+      const fileName      = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+      const { url: cdnUrl } = await uploadBufferToShopifyFiles(imageBuffer, contentType, fileName);
+      mediaInput = [{ originalSource: cdnUrl, alt: productTitle, mediaContentType: "IMAGE" }];
+    } catch (err) {
+      console.error("[CHECKOUT] Image re-upload failed, creating product without image:", err.message);
+    }
+  }
 
   const productData = await shopifyAdminGraphql(`
     mutation CreateCheckoutProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
