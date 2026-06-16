@@ -2003,12 +2003,167 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
   }
 });
 
+// Best-effort cleanup of hidden checkout products if a later step in the
+// multi-item checkout flow fails partway through.
+async function cleanupCheckoutProducts(productIds) {
+  await Promise.all(productIds.map((id) =>
+    shopifyAdminGraphql(`
+      mutation DeleteCheckoutProduct($input: ProductDeleteInput!) {
+        productDelete(input: $input) {
+          userErrors { field message }
+        }
+      }
+    `, { input: { id } }).catch((err) => {
+      console.error("[CHECKOUT] Cleanup error:", err.message);
+    })
+  ));
+}
+
+// Creates a hidden (DRAFT-priced) Shopify product + variant for a single
+// checkout line item. Throws an Error with .statusCode/.userErrors on failure.
+async function createCheckoutProductForItem(item) {
+  const {
+    productName = "",
+    quantity,
+    unitPrice: rawUnitPrice,
+    imageUrl = "",
+    width  = 2,
+    height = 2.19,
+    options = {}
+  } = item || {};
+
+  const qty          = Math.max(10, Number(quantity) || 10);
+  const parsedHeight = Math.max(1, Number(height) || 1);
+  const parsedWidth  = Math.max(1, Number(width)  || 1);
+
+  const unitPrice = Number(Number(rawUnitPrice || 0).toFixed(2));
+  if (!unitPrice || unitPrice <= 0) {
+    const err = new Error("unitPrice is required and must be greater than 0 for every line item.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const total = Number((unitPrice * qty).toFixed(2));
+
+  const quotePayload = {
+    productName, width: parsedWidth, height: parsedHeight,
+    qty, unitPrice, total,
+    ts: Date.now(), options
+  };
+  const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
+
+  const patchType  = options.patchType  || productName || "Custom Patch";
+  const size       = options.size       || `${parsedWidth}" x ${parsedHeight}"`;
+  const shape      = options.shape      || "";
+  const backing    = options.backing    || "";
+  const border     = options.border     || "";
+  const colors     = options.colors     || "";
+
+  const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
+
+  // Normalise imageUrl — relative paths get the store domain prepended
+  const resolvedImageUrl = imageUrl
+    ? imageUrl.startsWith("http")
+      ? imageUrl
+      : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
+    : "";
+
+  const mediaInput = resolvedImageUrl
+    ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+    : [];
+
+  const productData = await shopifyAdminGraphql(`
+    mutation CreateCheckoutProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+      productCreate(product: $product, media: $media) {
+        product {
+          id
+          variants(first: 1) {
+            nodes { id }
+          }
+        }
+        userErrors { field message }
+      }
+    }
+  `, {
+    product: {
+      title:  productTitle,
+      status: "ACTIVE",
+      tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")],
+      metafields: [
+        { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
+      ]
+    },
+    media: mediaInput
+  });
+  const productResult = productData?.productCreate;
+  const productErrors = productResult?.userErrors || [];
+
+  if (productErrors.length) {
+    const err = new Error(productErrors[0]?.message || "Failed to create product.");
+    err.statusCode = 400;
+    err.userErrors = productErrors;
+    throw err;
+  }
+
+  const createdProduct = productResult?.product;
+  const createdVariant = createdProduct?.variants?.nodes?.[0];
+
+  if (!createdVariant?.id) {
+    const err = new Error("Product created but variant ID not returned.");
+    err.statusCode       = 502;
+    err.createdProductId = createdProduct?.id;
+    throw err;
+  }
+
+  // Set exact price on the default variant
+  const variantData = await shopifyAdminGraphql(`
+    mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+        productVariants { id price sku }
+        userErrors { field message }
+      }
+    }
+  `, {
+    productId: createdProduct.id,
+    variants: [{
+      id:    createdVariant.id,
+      price: unitPrice.toFixed(2),
+    }]
+  });
+  const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
+
+  if (variantErrors.length) {
+    const err = new Error(variantErrors[0]?.message || "Failed to set variant price.");
+    err.statusCode       = 400;
+    err.userErrors       = variantErrors;
+    err.createdProductId = createdProduct.id;
+    throw err;
+  }
+
+  return {
+    productId: createdProduct.id,
+    variantId: createdVariant.id,
+    qty, unitPrice, total, quoteToken, productTitle,
+    customAttributes: [
+      { key: "_quote_token", value: quoteToken },
+      { key: "Patch Type",   value: patchType },
+      { key: "Size",         value: size },
+      ...(shape   ? [{ key: "Shape",   value: shape   }] : []),
+      ...(backing ? [{ key: "Backing", value: backing }] : []),
+      ...(border  ? [{ key: "Border",  value: border  }] : []),
+      ...(colors  ? [{ key: "Colors",  value: colors  }] : []),
+      { key: "Quantity",   value: String(qty) },
+      { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
+    ]
+  };
+}
+
 // ── POST /api/shopify/checkout ────────────────────────────────────────────────
-// Creates a hidden (DRAFT) Shopify product with the exact quote price and all
-// patch configuration baked into the variant, then returns a cart permalink URL
-// for immediate customer redirect to the normal Shopify checkout.
+// Creates one hidden (DRAFT-priced) Shopify product per line item with the
+// exact quote price and patch configuration baked into the variant, then
+// creates a single draft order across all of them and returns its invoice
+// URL for immediate customer redirect to the normal Shopify checkout.
 //
-// Body:
+// Body (single product, backward compatible):
 // {
 //   productName:  "Embroidered Patch",   // for quote pricing lookup
 //   quantity:     50,
@@ -2023,145 +2178,36 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
 //     colors:       "5"
 //   }
 // }
+//
+// Body (multiple products):
+// {
+//   lineItems: [
+//     { productName: "...", quantity: 50, unitPrice: 4.5, width: 3, height: 3, options: {...} },
+//     { productName: "...", quantity: 20, unitPrice: 6.0, width: 2, height: 2, options: {...} }
+//   ]
+// }
 app.post("/api/shopify/checkout", async (req, res) => {
-  const {
-    productName = "",
-    quantity,
-    unitPrice: rawUnitPrice,
-    imageUrl = "",
-    width  = 2,
-    height = 2.19,
-    options = {}
-  } = req.body || {};
+  const body = req.body || {};
+  const rawItems = Array.isArray(body.lineItems) && body.lineItems.length > 0
+    ? body.lineItems
+    : [body];
 
-  const qty          = Math.max(10, Number(quantity) || 10);
-  const parsedHeight = Math.max(1, Number(height) || 1);
-  const parsedWidth  = Math.max(1, Number(width)  || 1);
+  const createdProductIds = [];
 
   try {
-    // ── Step 1: use unit price from payload ───────────────────────────────────
-    const unitPrice = Number(Number(rawUnitPrice || 0).toFixed(2));
-    if (!unitPrice || unitPrice <= 0) {
-      return res.status(400).json({ ok: false, message: "unitPrice is required and must be greater than 0." });
-    }
-    const total = Number((unitPrice * qty).toFixed(2));
-
-    const quotePayload = {
-      productName, width: parsedWidth, height: parsedHeight,
-      qty, unitPrice, total,
-      ts: Date.now(), options
-    };
-    const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
-
-    // ── Step 2: build a readable product title + description ─────────────────
-    const patchType  = options.patchType  || productName || "Custom Patch";
-    const size       = options.size       || `${parsedWidth}" x ${parsedHeight}"`;
-    const shape      = options.shape      || "";
-    const backing    = options.backing    || "";
-    const border     = options.border     || "";
-    const colors     = options.colors     || "";
-
-    const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
-
-    const descriptionLines = [
-      `Patch Type: ${patchType}`,
-      `Size: ${size}`,
-      shape   ? `Shape: ${shape}`   : null,
-      backing ? `Backing: ${backing}` : null,
-      border  ? `Border: ${border}`  : null,
-      colors  ? `Colors: ${colors}`  : null,
-      `Quantity: ${qty}`,
-      `Unit Price: $${unitPrice.toFixed(2)}`,
-      `Total: $${total.toFixed(2)}`,
-      `Quote Token: ${quoteToken}`,
-    ].filter(Boolean).join("\n");
-
-    // ── Step 3: create a hidden product (DRAFT — invisible on storefront) ──────
-    // Normalise imageUrl — relative paths get the store domain prepended
-    const resolvedImageUrl = imageUrl
-      ? imageUrl.startsWith("http")
-        ? imageUrl
-        : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
-      : "";
-
-    const mediaInput = resolvedImageUrl
-      ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
-      : [];
-
-    const productData = await shopifyAdminGraphql(`
-      mutation CreateCheckoutProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
-        productCreate(product: $product, media: $media) {
-          product {
-            id
-            variants(first: 1) {
-              nodes { id }
-            }
-          }
-          userErrors { field message }
-        }
-      }
-    `, {
-      product: {
-        title:  productTitle,
-        status: "ACTIVE",
-        tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")],
-        metafields: [
-          { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
-        ]
-      },
-      media: mediaInput
-    });
-    const productResult = productData?.productCreate;
-    const productErrors = productResult?.userErrors || [];
-
-
-    if (productErrors.length) {
-      return res.status(400).json({
-        ok: false,
-        message: productErrors[0]?.message || "Failed to create product.",
-        userErrors: productErrors
-      });
+    const builtItems = [];
+    for (const rawItem of rawItems) {
+      const item = await createCheckoutProductForItem(rawItem);
+      createdProductIds.push(item.productId);
+      builtItems.push(item);
     }
 
-    const createdProduct = productResult?.product;
-    const createdVariant = createdProduct?.variants?.nodes?.[0];
-
-    if (!createdVariant?.id) {
-      return res.status(502).json({
-        ok: false,
-        message: "Product created but variant ID not returned."
-      });
-    }
-
-    // ── Step 4: set exact price on the default variant ────────────────────────
-    const variantData   = await shopifyAdminGraphql(`
-      mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-          productVariants { id price sku }
-          userErrors { field message }
-        }
-      }
-    `, {
-      productId: createdProduct.id,
-      variants: [{
-        id:    createdVariant.id,
-        price: unitPrice.toFixed(2),
-      }]
-    });
-    const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
-
-    if (variantErrors.length) {
-      return res.status(400).json({
-        ok: false,
-        message: variantErrors[0]?.message || "Failed to set variant price.",
-        userErrors: variantErrors
-      });
-    }
-
-    // ── Step 5: create draft order using the variant (price is already exact) ──
+    // ── Create a single draft order across all line items ────────────────────
     // DRAFT products can't be added via cart permalink, but draft order invoiceUrl
     // works regardless of product status. Since variant price = custom quote price,
     // Shopify uses it directly — no discount override needed.
+    const totalQty = builtItems.reduce((sum, i) => sum + i.qty, 0);
+
     const draftData = await shopifyAdminGraphql(`
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
@@ -2176,30 +2222,21 @@ app.post("/api/shopify/checkout", async (req, res) => {
       }
     `, {
       input: {
-        lineItems: [{
-          variantId: createdVariant.id,
-          quantity:  qty,
-          customAttributes: [
-            { key: "_quote_token", value: quoteToken },
-            { key: "Patch Type",   value: patchType },
-            { key: "Size",         value: size },
-            ...(shape   ? [{ key: "Shape",   value: shape   }] : []),
-            ...(backing ? [{ key: "Backing", value: backing }] : []),
-            ...(border  ? [{ key: "Border",  value: border  }] : []),
-            ...(colors  ? [{ key: "Colors",  value: colors  }] : []),
-            { key: "Quantity",   value: String(qty) },
-            { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
-          ]
-        }],
-        shippingLine: qty < 100
+        lineItems: builtItems.map((i) => ({
+          variantId:        i.variantId,
+          quantity:         i.qty,
+          customAttributes: i.customAttributes,
+        })),
+        shippingLine: totalQty < 100
           ? { title: "Standard Shipping", price: "30.00" }
           : { title: "Free Shipping",     price: "0.00"  },
-        note: productTitle,
+        note: builtItems.map((i) => i.productTitle).join(" + "),
       }
     });
 
     const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
     if (draftErrors.length) {
+      await cleanupCheckoutProducts(createdProductIds);
       return res.status(400).json({
         ok: false,
         message: draftErrors[0]?.message || "Failed to create draft order.",
@@ -2209,6 +2246,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
 
     const draftOrder = draftData?.draftOrderCreate?.draftOrder;
     if (!draftOrder?.invoiceUrl) {
+      await cleanupCheckoutProducts(createdProductIds);
       return res.status(502).json({
         ok: false,
         message: "Draft order created but invoiceUrl not returned.",
@@ -2224,18 +2262,21 @@ app.post("/api/shopify/checkout", async (req, res) => {
         name:       draftOrder.name,
         totalPrice: draftOrder.totalPrice,
       },
-      quote: {
-        unitPrice,
-        total,
-        qty,
-        quoteToken
-      }
+      quotes: builtItems.map((i) => ({
+        unitPrice:  i.unitPrice,
+        total:      i.total,
+        qty:        i.qty,
+        quoteToken: i.quoteToken
+      }))
     });
 
   } catch (error) {
-    return res.status(500).json({
+    if (error?.createdProductId) createdProductIds.push(error.createdProductId);
+    await cleanupCheckoutProducts(createdProductIds);
+    return res.status(error?.statusCode || 500).json({
       ok: false,
-      message: error?.message || "Failed to create checkout."
+      message: error?.message || "Failed to create checkout.",
+      ...(error?.userErrors ? { userErrors: error.userErrors } : {})
     });
   }
 });
