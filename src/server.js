@@ -2060,11 +2060,16 @@ async function createCheckoutProductForItem(item) {
 
   const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
 
-  // Normalise imageUrl — relative paths get the store domain prepended
+  // Normalise imageUrl — protocol-relative CDN URLs (e.g. from Shopify's
+  // `image_url` filter or cart.items[].image, which return "//cdn..." with
+  // no protocol) just need "https:" prepended; other relative paths get the
+  // store domain prepended.
   const resolvedImageUrl = imageUrl
     ? imageUrl.startsWith("http")
       ? imageUrl
-      : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
+      : imageUrl.startsWith("//")
+        ? `https:${imageUrl}`
+        : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
     : "";
 
   const mediaInput = resolvedImageUrl
