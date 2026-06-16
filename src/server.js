@@ -2104,7 +2104,10 @@ app.post("/api/shopify/checkout", async (req, res) => {
       product: {
         title:  productTitle,
         status: "ACTIVE",
-        tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")]
+        tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")],
+        metafields: [
+          { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
+        ]
       },
       media: mediaInput
     });
@@ -2569,6 +2572,9 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
         status:      "ACTIVE",
         tags:        ["manual-order", `qty-${qty}`],
+        metafields: [
+          { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
+        ]
       },
       media: mediaInput,
     });
@@ -2855,6 +2861,7 @@ app.post("/api/shopify/products", async (req, res) => {
     color             && { namespace: "custom", key: "color",             value: String(color),             type: "single_line_text_field" },
     product_quantity  && { namespace: "custom", key: "product_quantity",  value: String(parseInt(product_quantity, 10)),  type: "number_integer" },
     shipping          && { namespace: "custom", key: "shipping",          value: String(parseInt(shipping, 10)),          type: "number_integer" },
+    { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" },
   ].filter(Boolean);
 
   const productInput = {
