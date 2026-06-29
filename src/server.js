@@ -1790,6 +1790,13 @@ app.post("/api/forms/submit", async (req, res) => {
       body: JSON.stringify(req.body)
     });
 
+    // Also forward to neonsigns.us.com with the same payload (best-effort)
+    fetch("https://neonsigns.us.com/api/forms/for-category/public", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body)
+    }).catch(err => console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message));
+
     const data = await response.json();
 
     // Return the response from the external API
@@ -2537,42 +2544,50 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 
     // ── Forward to form submission API ────────────────────────────────────────
     const FORM_API_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public";
+    const formPayload = {
+      email,
+      phoneNumber,
+      queryFrom,
+      patchType,
+      shape,
+      backing,
+      border,
+      thread,
+      colors,
+      size,
+      quantity,
+      unitPrice,
+      subTotal,
+      uploadedFiles,
+      notes,
+      customerName,
+      firstCampaign,
+      firstMedium,
+      firstSource,
+      isFine,
+      lastCampaign,
+      lastMedium,
+      lastSource,
+      shopifyOrderId: draftOrder?.id,
+      invoiceUrl:     draftOrder?.invoiceUrl,
+      storeType:      "shopify",
+    };
     try {
       await fetch(FORM_API_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email,
-          phoneNumber,
-          queryFrom,
-          patchType,
-          shape,
-          backing,
-          border,
-          thread,
-          colors,
-          size,
-          quantity,
-          unitPrice,
-          subTotal,
-          uploadedFiles,
-          notes,
-          customerName,
-          firstCampaign,
-          firstMedium,
-          firstSource,
-          isFine,
-          lastCampaign,
-          lastMedium,
-          lastSource,
-          shopifyOrderId: draftOrder?.id,
-          invoiceUrl:     draftOrder?.invoiceUrl,
-          storeType:      "shopify",
-        })
+        body: JSON.stringify(formPayload)
       });
     } catch (formErr) {
       console.error("[FORM_SUBMIT] Failed to forward to form API:", formErr?.message);
     }
+
+    // Also forward to neonsigns.us.com with the same payload (best-effort)
+    fetch("https://neonsigns.us.com/api/forms/for-category/public", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(formPayload)
+    }).catch(formErr => console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message));
 
     return res.json({
       ok: true,
