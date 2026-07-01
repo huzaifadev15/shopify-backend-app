@@ -3145,6 +3145,169 @@ app.delete("/api/shopify/products/:id", async (req, res) => {
   }
 });
 
+// ── GET /api/shopify/orders/fees ─────────────────────────────────────────────
+// Fetches every order from the store along with its Shopify Payments
+// transaction fees, and returns the total/fee/net breakdown per order.
+// Query params:
+//   limit  — max number of orders to return (default: all)
+//   format — "csv" to get a downloadable CSV instead of JSON
+const ORDERS_WITH_FEES_QUERY = `
+  query OrdersWithFees($first: Int!, $after: String) {
+    orders(first: $first, after: $after, sortKey: CREATED_AT, reverse: true) {
+      pageInfo { hasNextPage endCursor }
+      edges {
+        node {
+          id
+          name
+          createdAt
+          displayFinancialStatus
+          totalPriceSet { shopMoney { amount currencyCode } }
+          transactions {
+            id
+            kind
+            status
+            amountSet { shopMoney { amount currencyCode } }
+            fees {
+              amount { amount currencyCode }
+              type
+              flatFeeName
+              rateName
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+function csvEscape(value) {
+  const str = String(value ?? "");
+  return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+}
+
+function summarizeOrderFees(order) {
+  let totalFees = 0;
+  const feeNames = [];
+  for (const tx of order.transactions || []) {
+    for (const fee of tx.fees || []) {
+      totalFees += parseFloat(fee.amount.amount);
+      feeNames.push(fee.flatFeeName || fee.rateName || fee.type);
+    }
+  }
+  const orderTotal = parseFloat(order.totalPriceSet.shopMoney.amount);
+  return {
+    orderName: order.name,
+    orderId: order.id,
+    createdAt: order.createdAt,
+    financialStatus: order.displayFinancialStatus,
+    orderTotal,
+    totalFees: Number(totalFees.toFixed(2)),
+    netAmount: Number((orderTotal - totalFees).toFixed(2)),
+    currency: order.totalPriceSet.shopMoney.currencyCode,
+    feeBreakdown: feeNames.join(" | ")
+  };
+}
+
+// ── GET /api/shopify/orders/:orderId/fees ────────────────────────────────────
+// Returns the transaction fee breakdown for a single order.
+// orderId can be a numeric ID or full GID (gid://shopify/Order/123).
+app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
+  const { orderId } = req.params;
+  if (!orderId) {
+    return res.status(400).json({ ok: false, message: "orderId is required." });
+  }
+
+  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/Order/${orderId}`;
+
+  try {
+    const query = `
+      query OrderFees($id: ID!) {
+        order(id: $id) {
+          id
+          name
+          createdAt
+          displayFinancialStatus
+          totalPriceSet { shopMoney { amount currencyCode } }
+          transactions {
+            id
+            kind
+            status
+            amountSet { shopMoney { amount currencyCode } }
+            fees {
+              amount { amount currencyCode }
+              type
+              flatFeeName
+              rateName
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(query, { id: gid });
+
+    if (!data.order) {
+      return res.status(404).json({ ok: false, message: `Order ${orderId} not found.` });
+    }
+
+    return res.json({ ok: true, order: summarizeOrderFees(data.order) });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to fetch order fees."
+    });
+  }
+});
+
+app.get("/api/shopify/orders/fees", async (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || Infinity;
+    const format = String(req.query.format || "json").toLowerCase();
+
+    let after = null;
+    let hasNextPage = true;
+    const orders = [];
+
+    while (hasNextPage && orders.length < limit) {
+      const pageSize = Math.min(50, limit - orders.length) || 50;
+      const data = await shopifyAdminGraphql(ORDERS_WITH_FEES_QUERY, { first: pageSize, after });
+      const { edges, pageInfo } = data.orders;
+      for (const { node } of edges) orders.push(node);
+      hasNextPage = pageInfo.hasNextPage;
+      after = pageInfo.endCursor;
+    }
+
+    const rows = orders.map(summarizeOrderFees);
+    const summary = {
+      orderCount: rows.length,
+      totalSales: Number(rows.reduce((sum, r) => sum + r.orderTotal, 0).toFixed(2)),
+      totalFees: Number(rows.reduce((sum, r) => sum + r.totalFees, 0).toFixed(2)),
+      totalNet: Number(rows.reduce((sum, r) => sum + r.netAmount, 0).toFixed(2))
+    };
+
+    if (format === "csv") {
+      const header = ["Order", "Order ID", "Created At", "Financial Status", "Order Total", "Shopify Fee", "Net Amount", "Currency", "Fee Breakdown"];
+      const lines = [header.join(",")];
+      for (const r of rows) {
+        lines.push([
+          r.orderName, r.orderId, r.createdAt, r.financialStatus,
+          r.orderTotal, r.totalFees, r.netAmount, r.currency, r.feeBreakdown
+        ].map(csvEscape).join(","));
+      }
+      res.set("Content-Type", "text/csv");
+      res.set("Content-Disposition", "attachment; filename=orders-with-fees.csv");
+      return res.send(lines.join("\n"));
+    }
+
+    return res.json({ ok: true, summary, orders: rows });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to fetch orders and fees."
+    });
+  }
+});
+
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
