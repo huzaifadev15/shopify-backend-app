@@ -7,6 +7,7 @@ import multer from "multer";
 import { fal } from "@fal-ai/client";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
+import { initFormQueue, submitFormToStore, getQueueStatus, retryDeadLetterJobs } from "./formQueue.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -1751,10 +1752,9 @@ app.post("/api/ai/edit", async (req, res) => {
 });
 
 // ── POST /api/forms/submit ────────────────────────────────────────────────────
-// Proxy route to submit form data to outjackets.com
+// Proxy route to submit form data to outjackets.com and neonsigns.us.com.
+// If a store is unreachable the payload is queued and retried automatically.
 app.post("/api/forms/submit", async (req, res) => {
-  const FORM_API_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public";
-
   const requiredFields = [
     "email",
     "phoneNumber",
@@ -1781,37 +1781,42 @@ app.post("/api/forms/submit", async (req, res) => {
       });
     }
 
-    // Forward the request to the external API
-    const response = await fetch(FORM_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(req.body)
-    });
+    // Forward to outjackets — queued for automatic retry if the store is down
+    const result = await submitFormToStore("outjackets", req.body);
 
-    // Also forward to neonsigns.us.com with the same payload (best-effort)
-    fetch("https://neonsigns.us.com/api/forms/for-category/public", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req.body)
-    }).catch(err => console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message));
+    // Also forward to neonsigns.us.com with the same payload (queued on failure too)
+    submitFormToStore("neonsigns", req.body).catch(err =>
+      console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message));
 
-    const data = await response.json();
-
-    // Return the response from the external API
-    if (!response.ok) {
-      return res.status(response.status).json({
-        ok: false,
-        message: data?.message || "Failed to submit form",
-        error: data
+    if (result.ok) {
+      return res.status(200).json({
+        ok: true,
+        message: "Form submitted successfully",
+        data: result.data
       });
     }
 
-    return res.status(200).json({
-      ok: true,
-      message: "Form submitted successfully",
-      data
+    // Store rejected the payload (4xx) — retrying won't help, surface the error
+    if (result.permanent) {
+      return res.status(result.status).json({
+        ok: false,
+        message: result.data?.message || "Failed to submit form",
+        error: result.data
+      });
+    }
+
+    // Store unreachable — the submission is saved and will be resent automatically
+    if (result.queued) {
+      return res.status(202).json({
+        ok: true,
+        queued: true,
+        message: "Store is temporarily unreachable — submission saved and will be sent automatically."
+      });
+    }
+
+    return res.status(502).json({
+      ok: false,
+      message: "Store is unreachable and the retry queue is unavailable. Please try again."
     });
   } catch (error) {
     console.error("Form submission error:", error);
@@ -2543,7 +2548,6 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     const draftOrder = result?.draftOrder;
 
     // ── Forward to form submission API ────────────────────────────────────────
-    const FORM_API_URL = "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public";
     const formPayload = {
       email,
       phoneNumber,
@@ -2572,22 +2576,11 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       invoiceUrl:     draftOrder?.invoiceUrl,
       storeType:      "shopify",
     };
-    try {
-      await fetch(FORM_API_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(formPayload)
-      });
-    } catch (formErr) {
-      console.error("[FORM_SUBMIT] Failed to forward to form API:", formErr?.message);
-    }
-
-    // Also forward to neonsigns.us.com with the same payload (best-effort)
-    fetch("https://neonsigns.us.com/api/forms/for-category/public", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(formPayload)
-    }).catch(formErr => console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message));
+    // Forward to both stores — failed sends are queued and retried automatically
+    submitFormToStore("outjackets", formPayload).catch(formErr =>
+      console.error("[FORM_SUBMIT] outjackets forward failed:", formErr?.message));
+    submitFormToStore("neonsigns", formPayload).catch(formErr =>
+      console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message));
 
     return res.json({
       ok: true,
@@ -3308,6 +3301,23 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
   }
 });
 
+// ── Form retry queue admin ────────────────────────────────────────────────────
+app.get("/api/queue/status", async (_req, res) => {
+  try {
+    return res.json({ ok: true, ...(await getQueueStatus()) });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error?.message || "Failed to read queue status." });
+  }
+});
+
+app.post("/api/queue/retry", async (_req, res) => {
+  try {
+    return res.json({ ok: true, ...(await retryDeadLetterJobs()) });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: error?.message || "Failed to retry dead-letter jobs." });
+  }
+});
+
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
@@ -3317,6 +3327,8 @@ app.use((error, _req, res, next) => {
   }
   return next(error);
 });
+
+initFormQueue();
 
 app.listen(PORT, () => {
   console.log(`Quote API running on http://localhost:${PORT}`);
