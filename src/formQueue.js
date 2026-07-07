@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { createHash } from "crypto";
+import { Redis } from "ioredis";
 import { Queue, Worker, UnrecoverableError } from "bullmq";
 
 // ── Retry queue for external store form submissions ──────────────────────────
@@ -6,6 +8,15 @@ import { Queue, Worker, UnrecoverableError } from "bullmq";
 // (network error, timeout, 5xx), the payload is saved as a BullMQ job in
 // Upstash Redis and retried automatically with exponential backoff. A 4xx
 // response is treated as permanent (bad payload) and is never retried.
+//
+// Deduplication strategy (prevents double-delivery when a response times out
+// after the store already received the form):
+//   1. Every submission gets a stable submissionId derived from the Shopify
+//      order ID (or a hash of key payload fields when there is no order ID).
+//   2. On successful delivery we write delivered:<submissionId> = 1 (48h TTL)
+//      to Redis. The worker checks this flag before every retry attempt.
+//   3. BullMQ jobs use submissionId as their jobId — so queuing the same
+//      submission twice is a no-op (BullMQ ignores duplicate jobIds).
 
 export const STORE_ENDPOINTS = {
   outjackets: "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public",
@@ -17,17 +28,17 @@ const SEND_TIMEOUT_MS = Number(process.env.FORM_SEND_TIMEOUT_MS || 15_000);
 const RETRY_ATTEMPTS = Number(process.env.FORM_RETRY_ATTEMPTS || 48);
 const RETRY_BASE_DELAY_MS = Number(process.env.FORM_RETRY_BASE_DELAY_MS || 60_000);
 const RETRY_MAX_DELAY_MS = Number(process.env.FORM_RETRY_MAX_DELAY_MS || 30 * 60_000);
+const DELIVERED_TTL_SEC = 48 * 3600;
 
 let formQueue = null;
 let formWorker = null;
+let redisClient = null;
 
 function redisConnectionOptions() {
   const restUrl = (process.env.UPSTASH_REDIS_REST_URL || "").trim();
   const token = (process.env.UPSTASH_REDIS_REST_TOKEN || "").trim();
   if (!restUrl || !token) return null;
   return {
-    // Upstash exposes the native Redis protocol on the same host as the REST
-    // API, and the REST token doubles as the Redis password.
     host: restUrl.replace(/^https?:\/\//i, "").replace(/\/+$/g, ""),
     port: 6379,
     username: "default",
@@ -40,6 +51,43 @@ function redisConnectionOptions() {
 // Delays: 1m, 2m, 4m, 8m, 16m, then every 30m (capped) until attempts run out.
 function retryBackoff(attemptsMade) {
   return Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attemptsMade - 1));
+}
+
+// Generates a stable ID for a (store, payload) pair.
+// Uses the Shopify order ID when available; otherwise hashes key fields.
+export function makeSubmissionId(store, payload) {
+  const orderId = payload?.shopifyOrderId || payload?.shopifyDraftOrderId;
+  if (orderId) {
+    return `${store}:${String(orderId).replace(/\W+/g, "-")}`;
+  }
+  // For submissions without an order ID, round the timestamp to the nearest
+  // minute so that rapid duplicate clicks (same minute) get the same ID.
+  const minute = Math.floor(Date.now() / 60_000);
+  const fingerprint = [
+    store,
+    payload?.email || "",
+    payload?.patchType || "",
+    payload?.quantity || "",
+    payload?.subTotal || "",
+    minute,
+  ].join("|");
+  return createHash("sha256").update(fingerprint).digest("hex").slice(0, 32);
+}
+
+async function markDelivered(submissionId) {
+  if (!redisClient) return;
+  try {
+    await redisClient.set(`delivered:${submissionId}`, "1", "EX", DELIVERED_TTL_SEC);
+  } catch (_error) { /* non-fatal */ }
+}
+
+async function isDelivered(submissionId) {
+  if (!redisClient) return false;
+  try {
+    return (await redisClient.get(`delivered:${submissionId}`)) === "1";
+  } catch (_error) {
+    return false;
+  }
 }
 
 // Sends the payload to one store. Never throws — returns:
@@ -83,7 +131,8 @@ export async function sendToStore(store, payload) {
 }
 
 // Saves a failed submission so the worker retries it later.
-export async function enqueueFormRetry(store, payload, reason) {
+// jobId = submissionId ensures the same form can never be queued twice.
+export async function enqueueFormRetry(store, payload, reason, submissionId) {
   if (!formQueue) {
     console.error(`[FORM_QUEUE] Queue disabled — LOST submission for ${store}. Payload: ${JSON.stringify(payload)}`);
     return false;
@@ -91,8 +140,9 @@ export async function enqueueFormRetry(store, payload, reason) {
   try {
     const job = await formQueue.add(
       store,
-      { store, payload, firstError: reason || "unknown" },
+      { store, payload, firstError: reason || "unknown", submissionId },
       {
+        jobId: submissionId,
         attempts: RETRY_ATTEMPTS,
         backoff: { type: "custom" },
         delay: RETRY_BASE_DELAY_MS,
@@ -103,7 +153,6 @@ export async function enqueueFormRetry(store, payload, reason) {
     console.log(`[FORM_QUEUE] Queued ${store} submission (job ${job.id}) — first error: ${reason}`);
     return true;
   } catch (error) {
-    // Redis itself is unreachable — log the full payload so it can be recovered by hand.
     console.error(`[FORM_QUEUE] CRITICAL: could not enqueue ${store} submission (${error?.message}). Payload: ${JSON.stringify(payload)}`);
     return false;
   }
@@ -112,13 +161,29 @@ export async function enqueueFormRetry(store, payload, reason) {
 // Tries to deliver now; on a retryable failure the payload is queued.
 // Returns the sendToStore result plus { queued } when queueing happened.
 export async function submitFormToStore(store, payload) {
+  const submissionId = makeSubmissionId(store, payload);
+
+  // Skip if already delivered (handles the case where the store received the
+  // form but the HTTP response timed out on our side — the most common cause
+  // of duplicate submissions).
+  if (await isDelivered(submissionId)) {
+    console.log(`[FORM_QUEUE] Skipping ${store} — already delivered (id: ${submissionId})`);
+    return { ok: true, skipped: true };
+  }
+
   const result = await sendToStore(store, payload);
-  if (result.ok) return result;
+
+  if (result.ok) {
+    await markDelivered(submissionId);
+    return result;
+  }
+
   if (result.permanent) {
     console.warn(`[FORM_QUEUE] ${store} rejected submission permanently (HTTP ${result.status}) — not retrying.`);
     return result;
   }
-  const queued = await enqueueFormRetry(store, payload, result.error);
+
+  const queued = await enqueueFormRetry(store, payload, result.error, submissionId);
   return { ...result, queued };
 }
 
@@ -129,15 +194,30 @@ export function initFormQueue() {
     return false;
   }
 
+  // Separate ioredis client for direct GET/SET (delivered flags).
+  redisClient = new Redis({ ...connection, maxRetriesPerRequest: 3, lazyConnect: true });
+  redisClient.on("error", (error) => console.error("[FORM_QUEUE] Redis client error:", error?.message));
+
   formQueue = new Queue(QUEUE_NAME, { connection });
   formQueue.on("error", (error) => console.error("[FORM_QUEUE] Queue error:", error?.message));
 
   formWorker = new Worker(
     QUEUE_NAME,
     async (job) => {
-      const { store, payload } = job.data;
+      const { store, payload, submissionId } = job.data;
+
+      // Guard against re-delivery: if the form was already sent (e.g. a
+      // previous attempt succeeded but the response timed out), skip.
+      if (submissionId && await isDelivered(submissionId)) {
+        console.log(`[FORM_QUEUE] Job ${job.id} (${store}) already delivered — skipping.`);
+        return { skipped: true };
+      }
+
       const result = await sendToStore(store, payload);
-      if (result.ok) return { status: result.status };
+      if (result.ok) {
+        if (submissionId) await markDelivered(submissionId);
+        return { status: result.status };
+      }
       if (result.permanent) {
         throw new UnrecoverableError(`${store} rejected submission (HTTP ${result.status})`);
       }
@@ -146,7 +226,6 @@ export function initFormQueue() {
     {
       connection,
       concurrency: 2,
-      // Poll gently — Upstash bills per command and the queue is usually empty.
       drainDelay: 60,
       stalledInterval: 5 * 60_000,
       settings: { backoffStrategy: retryBackoff },
@@ -154,7 +233,8 @@ export function initFormQueue() {
   );
 
   formWorker.on("completed", (job) => {
-    console.log(`[FORM_QUEUE] Delivered queued ${job.name} submission (job ${job.id}) after ${job.attemptsMade} attempt(s).`);
+    const skipped = job.returnvalue?.skipped;
+    console.log(`[FORM_QUEUE] Job ${job.id} (${job.name}) ${skipped ? "skipped (already delivered)" : `delivered after ${job.attemptsMade} attempt(s)`}.`);
   });
   formWorker.on("failed", (job, error) => {
     if (!job) return;
@@ -195,7 +275,6 @@ export async function getQueueStatus() {
   };
 }
 
-// Puts dead-lettered jobs back in the queue for a fresh round of retries.
 export async function retryDeadLetterJobs() {
   if (!formQueue) return { enabled: false, retried: 0 };
   const failed = await formQueue.getFailed(0, 99);
