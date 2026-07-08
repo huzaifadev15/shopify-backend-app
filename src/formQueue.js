@@ -57,21 +57,18 @@ function retryBackoff(attemptsMade) {
 // Uses the Shopify order ID when available; otherwise hashes key fields.
 export function makeSubmissionId(store, payload) {
   const orderId = payload?.shopifyOrderId || payload?.shopifyDraftOrderId;
-  if (orderId) {
-    return `${store}:${String(orderId).replace(/\W+/g, "-")}`;
-  }
-  // For submissions without an order ID, round the timestamp to the nearest
-  // minute so that rapid duplicate clicks (same minute) get the same ID.
-  const minute = Math.floor(Date.now() / 60_000);
-  const fingerprint = [
-    store,
-    payload?.email || "",
-    payload?.patchType || "",
-    payload?.quantity || "",
-    payload?.subTotal || "",
-    minute,
-  ].join("|");
-  return createHash("sha256").update(fingerprint).digest("hex").slice(0, 32);
+  const fingerprint = orderId
+    ? `${store}|${orderId}`
+    : [
+        store,
+        payload?.email || "",
+        payload?.patchType || "",
+        payload?.quantity || "",
+        payload?.subTotal || "",
+        Math.floor(Date.now() / 60_000), // rounded to minute
+      ].join("|");
+  // SHA-256 hex — no colons, slashes or other chars BullMQ forbids in jobIds
+  return createHash("sha256").update(fingerprint).digest("hex").slice(0, 40);
 }
 
 async function markDelivered(submissionId) {
