@@ -1773,7 +1773,7 @@ app.post("/api/forms/submit", async (req, res) => {
 
   try {
     // Validate required fields
-    const missingFields = requiredFields.filter(field => !req.body[field]);
+    const missingFields = requiredFields.filter(field => req.body[field] === undefined || req.body[field] === null);
     if (missingFields.length > 0) {
       return res.status(400).json({
         ok: false,
