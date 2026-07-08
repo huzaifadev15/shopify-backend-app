@@ -1780,12 +1780,12 @@ app.post("/api/forms/submit", async (req, res) => {
       });
     }
 
-    // Forward to outjackets
-    const result = await submitFormToStore("outjackets", req.body);
-
-    // Also forward to neonsigns.us.com with the same payload
-    submitFormToStore("neonsigns", req.body).catch(err =>
-      console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message));
+    // Forward to outjackets and neonsigns.us.com with the same payload
+    const [result] = await Promise.all([
+      submitFormToStore("outjackets", req.body),
+      submitFormToStore("neonsigns", req.body).catch(err =>
+        console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message)),
+    ]);
 
     if (result.ok) {
       return res.status(200).json({
@@ -2567,10 +2567,12 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       storeType:      "shopify",
     };
     // Forward to both stores
-    submitFormToStore("outjackets", formPayload).catch(formErr =>
-      console.error("[FORM_SUBMIT] outjackets forward failed:", formErr?.message));
-    submitFormToStore("neonsigns", formPayload).catch(formErr =>
-      console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message));
+    await Promise.all([
+      submitFormToStore("outjackets", formPayload).catch(formErr =>
+        console.error("[FORM_SUBMIT] outjackets forward failed:", formErr?.message)),
+      submitFormToStore("neonsigns", formPayload).catch(formErr =>
+        console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message)),
+    ]);
 
     return res.json({
       ok: true,
