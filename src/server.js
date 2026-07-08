@@ -7,7 +7,7 @@ import multer from "multer";
 import { fal } from "@fal-ai/client";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
-import { initFormQueue, submitFormToStore, getQueueStatus, retryDeadLetterJobs } from "./formQueue.js";
+import { submitFormToStore } from "./formQueue.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -1753,7 +1753,6 @@ app.post("/api/ai/edit", async (req, res) => {
 
 // ── POST /api/forms/submit ────────────────────────────────────────────────────
 // Proxy route to submit form data to outjackets.com and neonsigns.us.com.
-// If a store is unreachable the payload is queued and retried automatically.
 app.post("/api/forms/submit", async (req, res) => {
   const requiredFields = [
     "email",
@@ -1781,10 +1780,10 @@ app.post("/api/forms/submit", async (req, res) => {
       });
     }
 
-    // Forward to outjackets — queued for automatic retry if the store is down
+    // Forward to outjackets
     const result = await submitFormToStore("outjackets", req.body);
 
-    // Also forward to neonsigns.us.com with the same payload (queued on failure too)
+    // Also forward to neonsigns.us.com with the same payload
     submitFormToStore("neonsigns", req.body).catch(err =>
       console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message));
 
@@ -1796,7 +1795,7 @@ app.post("/api/forms/submit", async (req, res) => {
       });
     }
 
-    // Store rejected the payload (4xx) — retrying won't help, surface the error
+    // Store rejected the payload (4xx) — surface the error
     if (result.permanent) {
       return res.status(result.status).json({
         ok: false,
@@ -1805,18 +1804,9 @@ app.post("/api/forms/submit", async (req, res) => {
       });
     }
 
-    // Store unreachable — the submission is saved and will be resent automatically
-    if (result.queued) {
-      return res.status(202).json({
-        ok: true,
-        queued: true,
-        message: "Store is temporarily unreachable — submission saved and will be sent automatically."
-      });
-    }
-
     return res.status(502).json({
       ok: false,
-      message: "Store is unreachable and the retry queue is unavailable. Please try again."
+      message: "Store is unreachable. Please try again."
     });
   } catch (error) {
     console.error("Form submission error:", error);
@@ -2576,7 +2566,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       invoiceUrl:     draftOrder?.invoiceUrl,
       storeType:      "shopify",
     };
-    // Forward to both stores — failed sends are queued and retried automatically
+    // Forward to both stores
     submitFormToStore("outjackets", formPayload).catch(formErr =>
       console.error("[FORM_SUBMIT] outjackets forward failed:", formErr?.message));
     submitFormToStore("neonsigns", formPayload).catch(formErr =>
@@ -3301,23 +3291,6 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
   }
 });
 
-// ── Form retry queue admin ────────────────────────────────────────────────────
-app.get("/api/queue/status", async (_req, res) => {
-  try {
-    return res.json({ ok: true, ...(await getQueueStatus()) });
-  } catch (error) {
-    return res.status(500).json({ ok: false, message: error?.message || "Failed to read queue status." });
-  }
-});
-
-app.post("/api/queue/retry", async (_req, res) => {
-  try {
-    return res.json({ ok: true, ...(await retryDeadLetterJobs()) });
-  } catch (error) {
-    return res.status(500).json({ ok: false, message: error?.message || "Failed to retry dead-letter jobs." });
-  }
-});
-
 app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
@@ -3327,8 +3300,6 @@ app.use((error, _req, res, next) => {
   }
   return next(error);
 });
-
-initFormQueue();
 
 app.listen(PORT, () => {
   console.log(`Quote API running on http://localhost:${PORT}`);
