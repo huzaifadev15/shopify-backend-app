@@ -2971,6 +2971,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     customerName,
     size,
     productTitle: customProductTitle,
+    patchType,
   } = req.body || {};
 
   const qty = parseInt(quantity, 10);
@@ -2994,6 +2995,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
     const descriptionLines = [
       `Quantity: ${qty}`,
+      patchType ? `Patch Type: ${patchType}` : null,
       size ? `Size: ${size}` : null,
       backing ? `Backing: ${backing}` : null,
       borderValue ? `Border: ${borderValue}` : null,
@@ -3126,6 +3128,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
               quantity: qty,
               customAttributes: [
                 { key: "Quantity", value: String(qty) },
+                patchType ? { key: "Patch Type", value: patchType } : null,
                 size ? { key: "Size", value: String(size) } : null,
                 backing ? { key: "Backing", value: backing } : null,
                 borderValue ? { key: "Border", value: borderValue } : null,
