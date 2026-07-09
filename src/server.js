@@ -11,9 +11,16 @@ import { submitFormToStore } from "./formQueue.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-const defaultCorsOrigin = process.env.STOREFRONT_ORIGIN || (process.env.SHOPIFY_SHOP_DOMAIN ? `https://${normalizeShopDomain(process.env.SHOPIFY_SHOP_DOMAIN)}` : "");
+const defaultCorsOrigin =
+  process.env.STOREFRONT_ORIGIN ||
+  (process.env.SHOPIFY_SHOP_DOMAIN
+    ? `https://${normalizeShopDomain(process.env.SHOPIFY_SHOP_DOMAIN)}`
+    : "");
 const rawCorsOrigin = process.env.CORS_ORIGIN || defaultCorsOrigin;
-const allowAllOrigins = rawCorsOrigin.split(",").map((s) => s.trim()).includes("*");
+const allowAllOrigins = rawCorsOrigin
+  .split(",")
+  .map((s) => s.trim())
+  .includes("*");
 const allowedOrigins = allowAllOrigins
   ? []
   : rawCorsOrigin
@@ -28,8 +35,8 @@ app.use(
       }
       return callback(new Error("Not allowed by CORS"));
     },
-    credentials: true
-  })
+    credentials: true,
+  }),
 );
 
 const PORT = Number(process.env.PORT || 8787);
@@ -40,29 +47,46 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
 const SHOPIFY_API_KEY = (process.env.SHOPIFY_API_KEY || "").trim();
 const SHOPIFY_API_SECRET = (process.env.SHOPIFY_API_SECRET || "").trim();
 const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-const SHOPIFY_SCOPES = (process.env.SHOPIFY_SCOPES || "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications").trim();
+const SHOPIFY_SCOPES = (
+  process.env.SHOPIFY_SCOPES ||
+  "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications"
+).trim();
 // Mutable — updated at runtime when OAuth completes
 let SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
 const QUOTE_FUNCTION_ID = (process.env.QUOTE_FUNCTION_ID || "").trim();
-const CART_TRANSFORM_FUNCTION_ID = (process.env.CART_TRANSFORM_FUNCTION_ID || "").trim();
+const CART_TRANSFORM_FUNCTION_ID = (
+  process.env.CART_TRANSFORM_FUNCTION_ID || ""
+).trim();
 const FAL_KEY = (process.env.FAL_KEY || "").trim();
 if (FAL_KEY) fal.config({ credentials: FAL_KEY });
 const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
 const FIREBASE_API_KEY = (process.env.FIREBASE_API_KEY || "").trim();
 const FIREBASE_AUTH_DOMAIN = (process.env.FIREBASE_AUTH_DOMAIN || "").trim();
 const FIREBASE_PROJECT_ID = (process.env.FIREBASE_PROJECT_ID || "").trim();
-const FIREBASE_STORAGE_BUCKET = (process.env.FIREBASE_STORAGE_BUCKET || "").trim();
-const FIREBASE_MESSAGING_SENDER_ID = (process.env.FIREBASE_MESSAGING_SENDER_ID || "").trim();
+const FIREBASE_STORAGE_BUCKET = (
+  process.env.FIREBASE_STORAGE_BUCKET || ""
+).trim();
+const FIREBASE_MESSAGING_SENDER_ID = (
+  process.env.FIREBASE_MESSAGING_SENDER_ID || ""
+).trim();
 const FIREBASE_APP_ID = (process.env.FIREBASE_APP_ID || "").trim();
-const FIREBASE_MEASUREMENT_ID = (process.env.FIREBASE_MEASUREMENT_ID || "").trim();
+const FIREBASE_MEASUREMENT_ID = (
+  process.env.FIREBASE_MEASUREMENT_ID || ""
+).trim();
 const AI_RATE_LIMIT_MAX = Number(process.env.AI_RATE_LIMIT_MAX || 10);
-const AI_RATE_LIMIT_WINDOW_MS = Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000);
+const AI_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.AI_RATE_LIMIT_WINDOW_MS || 60_000,
+);
 const AI_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || 12_000);
 const AI_AWAIT_TIMEOUT_MS = Number(process.env.AI_AWAIT_TIMEOUT_MS || 45_000);
 const AI_AWAIT_POLL_MS = Number(process.env.AI_AWAIT_POLL_MS || 1500);
 const AI_STATUS_MIN_POLL_MS = Number(process.env.AI_STATUS_MIN_POLL_MS || 1500);
-const AI_ALLOWED_MODELS = (process.env.AI_ALLOWED_MODELS || "flux,flux-pro,flux-schnell")
-  .split(",").map(s => s.trim()).filter(Boolean);
+const AI_ALLOWED_MODELS = (
+  process.env.AI_ALLOWED_MODELS || "flux,flux-pro,flux-schnell"
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const AI_NEGATIVE_PROMPT = (
   process.env.AI_NEGATIVE_PROMPT ||
   "photorealistic, photograph, 3d render, hyperrealistic, skin texture, bokeh, camera, lens, realistic lighting, blurry, watermark, ugly, deformed"
@@ -84,20 +108,22 @@ function normalizeShopDomain(value) {
 
 // ── Fal.ai model registry ─────────────────────────────────────────────────────
 const FAL_MODEL_PATHS = {
-  "flux":         "fal-ai/flux",
-  "flux-pro":     "fal-ai/flux-pro",
+  flux: "fal-ai/flux",
+  "flux-pro": "fal-ai/flux-pro",
   "flux-schnell": "fal-ai/flux/schnell",
   "flux-realism": "fal-ai/flux-realism",
-  "recraft-v3":   "fal-ai/recraft-v3",
+  "recraft-v3": "fal-ai/recraft-v3",
 };
 
 function buildFalModelPath(provider, model) {
   if (provider !== "fal.ai") {
-    throw new Error("Unsupported provider. Only fal.ai is currently supported.");
+    throw new Error(
+      "Unsupported provider. Only fal.ai is currently supported.",
+    );
   }
   if (!AI_ALLOWED_MODELS.includes(model)) {
     throw new Error(
-      `Unsupported model "${model}". Allowed: ${AI_ALLOWED_MODELS.join(", ")}.`
+      `Unsupported model "${model}". Allowed: ${AI_ALLOWED_MODELS.join(", ")}.`,
     );
   }
   const path = FAL_MODEL_PATHS[model];
@@ -113,7 +139,7 @@ function getFalHeaders() {
   }
   return {
     Authorization: `Key ${FAL_KEY}`,
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
   };
 }
 
@@ -123,7 +149,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = AI_TIMEOUT_MS) {
   try {
     return await fetch(url, {
       ...options,
-      signal: controller.signal
+      signal: controller.signal,
     });
   } finally {
     clearTimeout(timeout);
@@ -144,11 +170,20 @@ async function sleep(ms) {
 }
 
 function getRequesterKey(req) {
-  return String(req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown");
+  return String(
+    req.ip ||
+      req.headers["x-forwarded-for"] ||
+      req.socket?.remoteAddress ||
+      "unknown",
+  );
 }
 
 function enforceAiRateLimit(req, res) {
-  const ip = req.ip || req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "unknown";
+  const ip =
+    req.ip ||
+    req.headers["x-forwarded-for"] ||
+    req.socket?.remoteAddress ||
+    "unknown";
   const now = Date.now();
   const current = aiRateLimitByIp.get(ip) || { count: 0, windowStart: now };
   if (now - current.windowStart > AI_RATE_LIMIT_WINDOW_MS) {
@@ -160,7 +195,7 @@ function enforceAiRateLimit(req, res) {
   if (current.count > AI_RATE_LIMIT_MAX) {
     res.status(429).json({
       ok: false,
-      message: "Rate limit exceeded. Please try again shortly."
+      message: "Rate limit exceeded. Please try again shortly.",
     });
     return false;
   }
@@ -195,8 +230,8 @@ async function rewritePromptForPatch(userPrompt) {
       {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json"
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json",
         },
         body: JSON.stringify({
           model: "llama-3.1-8b-instant",
@@ -281,22 +316,23 @@ async function rewritePromptForPatch(userPrompt) {
               - Apply the matching style rules from above for the detected patch type
               - Always end with: isolated on plain white background, no scenery, no backdrop
               - Strip out any words like: realistic, cinematic, photo, painting, render, atmospheric
-              - Return ONLY the rewritten prompt as a single sentence, nothing else, no explanation`
+              - Return ONLY the rewritten prompt as a single sentence, nothing else, no explanation`,
             },
             {
               role: "user",
-              content: userPrompt
-            }
-          ]
-        })
+              content: userPrompt,
+            },
+          ],
+        }),
       },
-      8000
+      8000,
     );
 
     const data = await readJsonSafely(response);
 
     if (!response.ok) {
-      const errMsg = data?.error?.message || data?.message || `HTTP ${response.status}`;
+      const errMsg =
+        data?.error?.message || data?.message || `HTTP ${response.status}`;
       console.warn(`[GROQ] API error: ${errMsg} — using fallback`);
       return `Embroidered circular patch of ${userPrompt}, stitched thread texture, merrowed border, flat 2D bold shapes, limited thread colors, isolated on plain white background, no scenery`;
     }
@@ -309,14 +345,18 @@ async function rewritePromptForPatch(userPrompt) {
 
     return rewritten;
   } catch (error) {
-    console.warn(`[GROQ] Prompt rewrite failed: ${error?.message || "unknown error"} — using fallback`);
+    console.warn(
+      `[GROQ] Prompt rewrite failed: ${error?.message || "unknown error"} — using fallback`,
+    );
     return `Embroidered circular patch of ${userPrompt}, stitched thread texture, merrowed border, flat 2D bold shapes, limited thread colors, isolated on plain white background, no scenery`;
   }
 }
 
 async function shopifyAdminGraphql(query, variables = {}) {
   if (!SHOP_DOMAIN || !SHOPIFY_ADMIN_ACCESS_TOKEN) {
-    throw new Error("Missing Shopify env vars. Set SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN.");
+    throw new Error(
+      "Missing Shopify env vars. Set SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN.",
+    );
   }
 
   const response = await fetch(
@@ -325,10 +365,10 @@ async function shopifyAdminGraphql(query, variables = {}) {
       method: "POST",
       headers: {
         "X-Shopify-Access-Token": SHOPIFY_ADMIN_ACCESS_TOKEN,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
       },
-      body: JSON.stringify({ query, variables })
-    }
+      body: JSON.stringify({ query, variables }),
+    },
   );
 
   const raw = await response.text();
@@ -336,7 +376,9 @@ async function shopifyAdminGraphql(query, variables = {}) {
   try {
     data = raw ? JSON.parse(raw) : {};
   } catch (_error) {
-    throw new Error(`Shopify GraphQL returned non-JSON response (status ${response.status}).`);
+    throw new Error(
+      `Shopify GraphQL returned non-JSON response (status ${response.status}).`,
+    );
   }
   if (!response.ok) {
     const errMessage =
@@ -345,11 +387,15 @@ async function shopifyAdminGraphql(query, variables = {}) {
       data?.message ||
       raw ||
       `Shopify GraphQL request failed with status ${response.status}.`;
-    throw new Error(`Shopify GraphQL request failed with status ${response.status}: ${String(errMessage).slice(0, 300)}`);
+    throw new Error(
+      `Shopify GraphQL request failed with status ${response.status}: ${String(errMessage).slice(0, 300)}`,
+    );
   }
 
   if (data.errors?.length) {
-    throw new Error(data.errors[0].message || "Shopify GraphQL returned errors.");
+    throw new Error(
+      data.errors[0].message || "Shopify GraphQL returned errors.",
+    );
   }
 
   return data.data;
@@ -382,21 +428,27 @@ async function getQuoteFunctionId() {
     );
   });
 
-  if (byTitle?.id) return { functionId: byTitle.id, functions, source: "title" };
+  if (byTitle?.id)
+    return { functionId: byTitle.id, functions, source: "title" };
 
   const byType = functions.find((item) => {
     const apiType = (item?.apiType || "").toLowerCase();
     return apiType.includes("discount");
   });
 
-  if (byType?.id) return { functionId: byType.id, functions, source: "apiType" };
+  if (byType?.id)
+    return { functionId: byType.id, functions, source: "apiType" };
 
   return { functionId: null, functions, source: "none" };
 }
 
 async function getCartTransformFunctionId() {
   if (CART_TRANSFORM_FUNCTION_ID) {
-    return { functionId: CART_TRANSFORM_FUNCTION_ID, functions: [], source: "env" };
+    return {
+      functionId: CART_TRANSFORM_FUNCTION_ID,
+      functions: [],
+      source: "env",
+    };
   }
 
   const query = `
@@ -414,17 +466,21 @@ async function getCartTransformFunctionId() {
   const functions = data?.shopifyFunctions?.nodes || [];
   const byTitle = functions.find((item) => {
     const title = (item?.title || "").toLowerCase();
-    return title.includes("cart-transformer") || title.includes("cart transformer");
+    return (
+      title.includes("cart-transformer") || title.includes("cart transformer")
+    );
   });
 
-  if (byTitle?.id) return { functionId: byTitle.id, functions, source: "title" };
+  if (byTitle?.id)
+    return { functionId: byTitle.id, functions, source: "title" };
 
   const byType = functions.find((item) => {
     const apiType = (item?.apiType || "").toLowerCase();
     return apiType.includes("cart_transform");
   });
 
-  if (byType?.id) return { functionId: byType.id, functions, source: "apiType" };
+  if (byType?.id)
+    return { functionId: byType.id, functions, source: "apiType" };
 
   return { functionId: null, functions, source: "none" };
 }
@@ -452,10 +508,15 @@ async function findExistingQuoteAutomaticDiscount() {
       }
     }
   `;
-  const existingData = await shopifyAdminGraphql(listQuery, { query: "title:'Quote Pricing Auto'" });
+  const existingData = await shopifyAdminGraphql(listQuery, {
+    query: "title:'Quote Pricing Auto'",
+  });
   return (existingData?.discountNodes?.nodes || []).find((node) => {
     const discount = node?.discount;
-    return discount?.__typename === "DiscountAutomaticApp" && discount?.title === "Quote Pricing Auto";
+    return (
+      discount?.__typename === "DiscountAutomaticApp" &&
+      discount?.title === "Quote Pricing Auto"
+    );
   });
 }
 
@@ -489,9 +550,9 @@ async function createQuoteAutomaticDiscount(functionId) {
       combinesWith: {
         orderDiscounts: true,
         productDiscounts: true,
-        shippingDiscounts: true
-      }
-    }
+        shippingDiscounts: true,
+      },
+    },
   };
 
   const createData = await shopifyAdminGraphql(mutation, variables);
@@ -521,9 +582,12 @@ async function findExistingCartTransform(functionId) {
 const oauthNonces = new Set();
 
 app.get("/shopify/auth", (req, res) => {
-  const shop = normalizeShopDomain(String(req.query.shop || SHOPIFY_SHOP_DOMAIN));
+  const shop = normalizeShopDomain(
+    String(req.query.shop || SHOPIFY_SHOP_DOMAIN),
+  );
   if (!shop) return res.status(400).send("Missing shop parameter.");
-  if (!SHOPIFY_API_KEY) return res.status(500).send("SHOPIFY_API_KEY is not configured.");
+  if (!SHOPIFY_API_KEY)
+    return res.status(500).send("SHOPIFY_API_KEY is not configured.");
 
   const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
   oauthNonces.add(nonce);
@@ -540,7 +604,9 @@ app.get("/shopify/callback", async (req, res) => {
 
   // Validate nonce to prevent CSRF
   if (!oauthNonces.has(state)) {
-    return res.status(403).send("Invalid state parameter. Possible CSRF attack.");
+    return res
+      .status(403)
+      .send("Invalid state parameter. Possible CSRF attack.");
   }
   oauthNonces.delete(state);
 
@@ -551,7 +617,10 @@ app.get("/shopify/callback", async (req, res) => {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join("&");
-    const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(message).digest("hex");
+    const digest = crypto
+      .createHmac("sha256", SHOPIFY_API_SECRET)
+      .update(message)
+      .digest("hex");
     if (digest !== hmac) return res.status(403).send("HMAC validation failed.");
   }
 
@@ -559,18 +628,26 @@ app.get("/shopify/callback", async (req, res) => {
     const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ client_id: SHOPIFY_API_KEY, client_secret: SHOPIFY_API_SECRET, code }),
+      body: JSON.stringify({
+        client_id: SHOPIFY_API_KEY,
+        client_secret: SHOPIFY_API_SECRET,
+        code,
+      }),
     });
 
     const tokenData = await tokenRes.json();
     if (!tokenRes.ok || !tokenData.access_token) {
-      return res.status(400).send("Failed to get access token: " + JSON.stringify(tokenData));
+      return res
+        .status(400)
+        .send("Failed to get access token: " + JSON.stringify(tokenData));
     }
 
     // Update the in-memory token so all subsequent API calls use it
     SHOPIFY_ADMIN_ACCESS_TOKEN = tokenData.access_token;
 
-    console.log(`[OAUTH] Token obtained for shop: ${shop} — set SHOPIFY_ADMIN_ACCESS_TOKEN in your env to persist it.`);
+    console.log(
+      `[OAUTH] Token obtained for shop: ${shop} — set SHOPIFY_ADMIN_ACCESS_TOKEN in your env to persist it.`,
+    );
 
     res.type("html").send(`
       <!doctype html><html><head><meta charset="UTF-8"/>
@@ -595,7 +672,7 @@ app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     quoteSecretConfigured: QUOTE_SECRET !== "dev-secret",
-    pricingFile: PRICING_FILE
+    pricingFile: PRICING_FILE,
   });
 });
 
@@ -950,7 +1027,8 @@ app.get("/api/shopify/check", async (_req, res) => {
   if (!SHOP_DOMAIN || !SHOPIFY_ADMIN_ACCESS_TOKEN) {
     return res.status(400).json({
       ok: false,
-      message: "Missing Shopify env vars. Set SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN."
+      message:
+        "Missing Shopify env vars. Set SHOPIFY_SHOP_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN.",
     });
   }
   try {
@@ -959,27 +1037,27 @@ app.get("/api/shopify/check", async (_req, res) => {
       {
         headers: {
           "X-Shopify-Access-Token": SHOPIFY_ADMIN_ACCESS_TOKEN,
-          "Content-Type": "application/json"
-        }
-      }
+          "Content-Type": "application/json",
+        },
+      },
     );
     if (!response.ok) {
       const text = await response.text();
       return res.status(response.status).json({
         ok: false,
         message: "Shopify API check failed.",
-        details: text
+        details: text,
       });
     }
     const data = await response.json();
     return res.json({
       ok: true,
-      shop: data?.shop?.domain || SHOP_DOMAIN
+      shop: data?.shop?.domain || SHOP_DOMAIN,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Shopify connectivity check failed."
+      message: error?.message || "Shopify connectivity check failed.",
     });
   }
 });
@@ -1000,12 +1078,12 @@ app.get("/api/shopify/functions", async (_req, res) => {
     const data = await shopifyAdminGraphql(query);
     return res.json({
       ok: true,
-      functions: data?.shopifyFunctions?.nodes || []
+      functions: data?.shopifyFunctions?.nodes || [],
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to load Shopify Functions."
+      message: error?.message || "Failed to load Shopify Functions.",
     });
   }
 });
@@ -1016,7 +1094,7 @@ app.get("/api/ai/models", (_req, res) => {
   res.json({
     ok: true,
     provider: "fal.ai",
-    models: AI_ALLOWED_MODELS
+    models: AI_ALLOWED_MODELS,
   });
 });
 
@@ -1029,7 +1107,7 @@ app.post("/api/ai/generate", async (req, res) => {
       prompt = "",
       provider = "fal.ai",
       model = "flux",
-      productHandle = ""
+      productHandle = "",
     } = req.body || {};
 
     // Normalize the prompt — collapse blank lines, trim each line.
@@ -1041,27 +1119,47 @@ app.post("/api/ai/generate", async (req, res) => {
       .join("\n");
 
     if (!userPrompt) {
-      return res.status(400).json({ ok: false, message: "prompt is required." });
+      return res
+        .status(400)
+        .json({ ok: false, message: "prompt is required." });
     }
     if (userPrompt.length < 3 || userPrompt.length > 300) {
       return res.status(400).json({
         ok: false,
-        message: "prompt must be between 3 and 300 characters."
+        message: "prompt must be between 3 and 300 characters.",
       });
     }
 
     // If the user didn't mention any patch type, tag it as embroidered so Groq
     // always has a type to apply the correct style rules against.
-    const PATCH_TYPE_KEYWORDS = ["embroidered", "pvc", "rubber", "chenille", "woven", "leather", "bullion", "wire", "printed", "sublimated", "felt"];
+    const PATCH_TYPE_KEYWORDS = [
+      "embroidered",
+      "pvc",
+      "rubber",
+      "chenille",
+      "woven",
+      "leather",
+      "bullion",
+      "wire",
+      "printed",
+      "sublimated",
+      "felt",
+    ];
     const promptLower = userPrompt.toLowerCase();
-    const hasPatchType = PATCH_TYPE_KEYWORDS.some((kw) => promptLower.includes(kw));
-    const promptForGroq = hasPatchType ? userPrompt : `embroidered patch: ${userPrompt}`;
+    const hasPatchType = PATCH_TYPE_KEYWORDS.some((kw) =>
+      promptLower.includes(kw),
+    );
+    const promptForGroq = hasPatchType
+      ? userPrompt
+      : `embroidered patch: ${userPrompt}`;
 
     // Groq rewrites into full patch-style language with correct type rules applied.
     // We only prepend visual style constraints — never override the patch type itself.
     const patchPrompt = await rewritePromptForPatch(promptForGroq);
     const finalPrompt = `2D flat vector patch design, sticker art style, no 3D, no depth, no clay, hard outer border, isolated on pure white background: ${patchPrompt}`;
-    console.log(`[AI_GENERATE] original="${userPrompt}" groqInput="${promptForGroq}" rewritten="${patchPrompt}"`);
+    console.log(
+      `[AI_GENERATE] original="${userPrompt}" groqInput="${promptForGroq}" rewritten="${patchPrompt}"`,
+    );
     console.log(`[AI_GENERATE] finalPrompt="${finalPrompt}"`);
 
     const modelPath = buildFalModelPath(provider, model);
@@ -1075,9 +1173,9 @@ app.post("/api/ai/generate", async (req, res) => {
           negative_prompt: AI_NEGATIVE_PROMPT,
           num_inference_steps: 35,
           guidance_scale: 9.0,
-          image_size: "square"
-        })
-      }
+          image_size: "square",
+        }),
+      },
     );
 
     const raw = await response.text();
@@ -1091,7 +1189,10 @@ app.post("/api/ai/generate", async (req, res) => {
     if (!response.ok) {
       return res.status(502).json({
         ok: false,
-        message: payload?.error || payload?.message || "fal.ai generate request failed."
+        message:
+          payload?.error ||
+          payload?.message ||
+          "fal.ai generate request failed.",
       });
     }
 
@@ -1099,25 +1200,32 @@ app.post("/api/ai/generate", async (req, res) => {
     if (!requestId) {
       return res.status(502).json({
         ok: false,
-        message: "fal.ai did not return requestId."
+        message: "fal.ai did not return requestId.",
       });
     }
 
     aiRequestMeta.set(requestId, { provider, model });
 
-    const shop = req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
-    console.log(`[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${userPrompt.length}`);
+    const shop =
+      req.headers["x-shopify-shop-domain"] || SHOP_DOMAIN || "unknown-shop";
+    console.log(
+      `[AI_GENERATE] requestId=${requestId} shop=${shop} promptLen=${userPrompt.length}`,
+    );
 
-    const compositeId = Buffer.from(JSON.stringify({ modelPath: FAL_MODEL_PATHS[model], id: requestId })).toString("base64url");
+    const compositeId = Buffer.from(
+      JSON.stringify({ modelPath: FAL_MODEL_PATHS[model], id: requestId }),
+    ).toString("base64url");
     return res.json({
       requestId: compositeId,
-      status: "processing"
+      status: "processing",
     });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
     return res.status(isTimeout ? 504 : 500).json({
       ok: false,
-      message: isTimeout ? "AI generation request timed out." : (error?.message || "Failed to start AI generation.")
+      message: isTimeout
+        ? "AI generation request timed out."
+        : error?.message || "Failed to start AI generation.",
     });
   }
 });
@@ -1125,7 +1233,10 @@ app.post("/api/ai/generate", async (req, res) => {
 // ── Shared fal.ai status poller ──────────────────────────────────────────────
 async function pollFalStatus(compositeRequestId, res) {
   const requestId = String(compositeRequestId || "").trim();
-  if (!requestId) return res.status(400).json({ ok: false, message: "requestId is required." });
+  if (!requestId)
+    return res
+      .status(400)
+      .json({ ok: false, message: "requestId is required." });
 
   let falRequestId = requestId;
   let modelPath = "fal-ai/flux";
@@ -1138,37 +1249,57 @@ async function pollFalStatus(compositeRequestId, res) {
   } catch (_) {}
 
   const falBase = `https://queue.fal.run/${modelPath}/requests/${encodeURIComponent(falRequestId)}`;
-  const statusResponse = await fetchWithTimeout(`${falBase}/status`, { method: "GET", headers: getFalHeaders() });
+  const statusResponse = await fetchWithTimeout(`${falBase}/status`, {
+    method: "GET",
+    headers: getFalHeaders(),
+  });
   const statusPayload = await readJsonSafely(statusResponse);
 
   if (!statusResponse.ok) {
     return res.status(502).json({
       status: "failed",
-      error: statusPayload?.detail || statusPayload?.error || statusPayload?.message || `fal.ai status check failed (${statusResponse.status}).`
+      error:
+        statusPayload?.detail ||
+        statusPayload?.error ||
+        statusPayload?.message ||
+        `fal.ai status check failed (${statusResponse.status}).`,
     });
   }
 
   const falStatus = String(statusPayload?.status || "").toUpperCase();
 
   if (falStatus === "COMPLETED") {
-    const resultResponse = await fetchWithTimeout(falBase, { method: "GET", headers: getFalHeaders() });
+    const resultResponse = await fetchWithTimeout(falBase, {
+      method: "GET",
+      headers: getFalHeaders(),
+    });
     const resultPayload = await readJsonSafely(resultResponse);
     if (!resultResponse.ok) {
       return res.status(502).json({
         status: "failed",
-        error: resultPayload?.detail || resultPayload?.error || resultPayload?.message || "fal.ai result fetch failed."
+        error:
+          resultPayload?.detail ||
+          resultPayload?.error ||
+          resultPayload?.message ||
+          "fal.ai result fetch failed.",
       });
     }
     const images = resultPayload?.image?.url
       ? [{ url: resultPayload.image.url }]
-      : (resultPayload?.images || []).map((item) => ({ url: item?.url })).filter((item) => Boolean(item.url));
+      : (resultPayload?.images || [])
+          .map((item) => ({ url: item?.url }))
+          .filter((item) => Boolean(item.url));
     return res.json({ status: "completed", images });
   }
 
   if (falStatus === "FAILED" || falStatus === "ERROR") {
     return res.json({
       status: "failed",
-      error: statusPayload?.error || statusPayload?.detail || statusPayload?.message || "Job failed."
+      error:
+        statusPayload?.error ||
+        statusPayload?.detail ||
+        statusPayload?.message ||
+        "Job failed.",
     });
   }
 
@@ -1182,7 +1313,12 @@ app.get("/api/ai/generate/:requestId", async (req, res) => {
     return await pollFalStatus(req.params.requestId, res);
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({ status: "failed", error: isTimeout ? "Timed out." : (error?.message || "Status check failed.") });
+    return res.status(isTimeout ? 504 : 500).json({
+      status: "failed",
+      error: isTimeout
+        ? "Timed out."
+        : error?.message || "Status check failed.",
+    });
   }
 });
 
@@ -1191,25 +1327,40 @@ app.get("/api/ai/edit/:requestId", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
 
   const compositeId = String(req.params.requestId || "").trim();
-  if (!compositeId) return res.status(400).json({ ok: false, message: "requestId is required." });
+  if (!compositeId)
+    return res
+      .status(400)
+      .json({ ok: false, message: "requestId is required." });
 
-  if (!FAL_KEY) return res.status(500).json({ ok: false, message: "FAL_KEY is not configured." });
+  if (!FAL_KEY)
+    return res
+      .status(500)
+      .json({ ok: false, message: "FAL_KEY is not configured." });
 
   let model, falRequestId;
   try {
-    const decoded = JSON.parse(Buffer.from(compositeId, "base64url").toString());
+    const decoded = JSON.parse(
+      Buffer.from(compositeId, "base64url").toString(),
+    );
     model = decoded.model || decoded.modelPath;
     falRequestId = decoded.id;
     if (!model || !falRequestId) throw new Error("missing fields");
   } catch (_) {
-    return res.status(400).json({ ok: false, message: "Invalid or malformed requestId." });
+    return res
+      .status(400)
+      .json({ ok: false, message: "Invalid or malformed requestId." });
   }
 
   try {
-    const statusResult = await fal.queue.status(model, { requestId: falRequestId, logs: false });
+    const statusResult = await fal.queue.status(model, {
+      requestId: falRequestId,
+      logs: false,
+    });
 
     if (statusResult.status === "COMPLETED") {
-      const resultData = await fal.queue.result(model, { requestId: falRequestId });
+      const resultData = await fal.queue.result(model, {
+        requestId: falRequestId,
+      });
       const output = resultData.data || {};
       const images = output.images ?? (output.image ? [output.image] : []);
       return res.json({
@@ -1229,8 +1380,12 @@ app.get("/api/ai/edit/:requestId", async (req, res) => {
 
     return res.json({ status: "processing" });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Status check failed";
-    if (message.toLowerCase().includes("failed") || message.toLowerCase().includes("cancelled")) {
+    const message =
+      error instanceof Error ? error.message : "Status check failed";
+    if (
+      message.toLowerCase().includes("failed") ||
+      message.toLowerCase().includes("cancelled")
+    ) {
       return res.json({ status: "failed", error: message });
     }
     return res.status(500).json({ ok: false, message });
@@ -1243,13 +1398,14 @@ app.post("/api/shopify/discounts/quote/ensure", async (_req, res) => {
     if (!functionId) {
       return res.status(404).json({
         ok: false,
-        message: "Could not auto-detect quote function ID from Shopify Functions.",
+        message:
+          "Could not auto-detect quote function ID from Shopify Functions.",
         hint: "Set QUOTE_FUNCTION_ID in .env, or call GET /api/shopify/functions and copy the correct id.",
         candidates: functions.map((item) => ({
           id: item?.id,
           title: item?.title,
-          apiType: item?.apiType
-        }))
+          apiType: item?.apiType,
+        })),
       });
     }
 
@@ -1262,17 +1418,19 @@ app.post("/api/shopify/discounts/quote/ensure", async (_req, res) => {
         message: "Quote automatic discount already exists.",
         functionSource: source,
         functionId,
-        discountNodeId: existingNode.id
+        discountNodeId: existingNode.id,
       });
     }
 
-    const { result, userErrors } = await createQuoteAutomaticDiscount(functionId);
+    const { result, userErrors } =
+      await createQuoteAutomaticDiscount(functionId);
     if (userErrors.length) {
       return res.status(400).json({
         ok: false,
-        message: "Shopify returned user errors while creating automatic discount.",
+        message:
+          "Shopify returned user errors while creating automatic discount.",
         userErrors,
-        functionId
+        functionId,
       });
     }
 
@@ -1281,12 +1439,12 @@ app.post("/api/shopify/discounts/quote/ensure", async (_req, res) => {
       created: true,
       functionSource: source,
       functionId,
-      automaticAppDiscount: result?.automaticAppDiscount
+      automaticAppDiscount: result?.automaticAppDiscount,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to ensure quote automatic discount."
+      message: error?.message || "Failed to ensure quote automatic discount.",
     });
   }
 });
@@ -1298,7 +1456,7 @@ app.post("/api/shopify/discounts/quote/disable", async (_req, res) => {
       return res.json({
         ok: true,
         disabled: false,
-        message: "No existing quote automatic discount found."
+        message: "No existing quote automatic discount found.",
       });
     }
 
@@ -1313,7 +1471,9 @@ app.post("/api/shopify/discounts/quote/disable", async (_req, res) => {
         }
       }
     `;
-    const deleteData = await shopifyAdminGraphql(deleteMutation, { id: existingNode.id });
+    const deleteData = await shopifyAdminGraphql(deleteMutation, {
+      id: existingNode.id,
+    });
     const deleteResult = deleteData?.discountAutomaticDelete;
     const deleteErrors = deleteResult?.userErrors || [];
     if (deleteErrors.length) {
@@ -1321,19 +1481,20 @@ app.post("/api/shopify/discounts/quote/disable", async (_req, res) => {
         ok: false,
         message: "Failed to disable existing quote automatic discount.",
         userErrors: deleteErrors,
-        discountNodeId: existingNode.id
+        discountNodeId: existingNode.id,
       });
     }
 
     return res.json({
       ok: true,
       disabled: true,
-      deletedAutomaticDiscountId: deleteResult?.deletedAutomaticDiscountId || existingNode.id
+      deletedAutomaticDiscountId:
+        deleteResult?.deletedAutomaticDiscountId || existingNode.id,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to disable quote automatic discount."
+      message: error?.message || "Failed to disable quote automatic discount.",
     });
   }
 });
@@ -1344,13 +1505,14 @@ app.post("/api/shopify/discounts/quote/recreate", async (_req, res) => {
     if (!functionId) {
       return res.status(404).json({
         ok: false,
-        message: "Could not auto-detect quote function ID from Shopify Functions.",
+        message:
+          "Could not auto-detect quote function ID from Shopify Functions.",
         hint: "Set QUOTE_FUNCTION_ID in .env, or call GET /api/shopify/functions and copy the correct id.",
         candidates: functions.map((item) => ({
           id: item?.id,
           title: item?.title,
-          apiType: item?.apiType
-        }))
+          apiType: item?.apiType,
+        })),
       });
     }
 
@@ -1369,7 +1531,9 @@ app.post("/api/shopify/discounts/quote/recreate", async (_req, res) => {
           }
         }
       `;
-      const deleteData = await shopifyAdminGraphql(deleteMutation, { id: existingNode.id });
+      const deleteData = await shopifyAdminGraphql(deleteMutation, {
+        id: existingNode.id,
+      });
       const deleteResult = deleteData?.discountAutomaticDelete;
       const deleteErrors = deleteResult?.userErrors || [];
       if (deleteErrors.length) {
@@ -1377,20 +1541,23 @@ app.post("/api/shopify/discounts/quote/recreate", async (_req, res) => {
           ok: false,
           message: "Failed to disable existing quote automatic discount.",
           userErrors: deleteErrors,
-          discountNodeId: existingNode.id
+          discountNodeId: existingNode.id,
         });
       }
-      deletedAutomaticDiscountId = deleteResult?.deletedAutomaticDiscountId || existingNode.id;
+      deletedAutomaticDiscountId =
+        deleteResult?.deletedAutomaticDiscountId || existingNode.id;
     }
 
-    const { result, userErrors } = await createQuoteAutomaticDiscount(functionId);
+    const { result, userErrors } =
+      await createQuoteAutomaticDiscount(functionId);
     if (userErrors.length) {
       return res.status(400).json({
         ok: false,
-        message: "Existing discount was disabled, but creating replacement failed.",
+        message:
+          "Existing discount was disabled, but creating replacement failed.",
         userErrors,
         functionId,
-        deletedAutomaticDiscountId
+        deletedAutomaticDiscountId,
       });
     }
 
@@ -1400,29 +1567,31 @@ app.post("/api/shopify/discounts/quote/recreate", async (_req, res) => {
       functionSource: source,
       functionId,
       deletedAutomaticDiscountId,
-      automaticAppDiscount: result?.automaticAppDiscount
+      automaticAppDiscount: result?.automaticAppDiscount,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to recreate quote automatic discount."
+      message: error?.message || "Failed to recreate quote automatic discount.",
     });
   }
 });
 
 app.post("/api/shopify/cart-transform/ensure", async (_req, res) => {
   try {
-    const { functionId, functions, source } = await getCartTransformFunctionId();
+    const { functionId, functions, source } =
+      await getCartTransformFunctionId();
     if (!functionId) {
       return res.status(404).json({
         ok: false,
-        message: "Could not auto-detect cart transform function ID from Shopify Functions.",
+        message:
+          "Could not auto-detect cart transform function ID from Shopify Functions.",
         hint: "Set CART_TRANSFORM_FUNCTION_ID in .env, or call GET /api/shopify/functions and copy the correct id.",
         candidates: functions.map((item) => ({
           id: item?.id,
           title: item?.title,
-          apiType: item?.apiType
-        }))
+          apiType: item?.apiType,
+        })),
       });
     }
 
@@ -1435,7 +1604,7 @@ app.post("/api/shopify/cart-transform/ensure", async (_req, res) => {
         message: "Cart transform already exists.",
         functionSource: source,
         functionId,
-        cartTransformId: existingNode.id
+        cartTransformId: existingNode.id,
       });
     }
 
@@ -1455,7 +1624,7 @@ app.post("/api/shopify/cart-transform/ensure", async (_req, res) => {
     `;
     const createData = await shopifyAdminGraphql(createMutation, {
       functionId,
-      blockOnFailure: false
+      blockOnFailure: false,
     });
     const result = createData?.cartTransformCreate;
     const userErrors = result?.userErrors || [];
@@ -1464,7 +1633,7 @@ app.post("/api/shopify/cart-transform/ensure", async (_req, res) => {
         ok: false,
         message: "Shopify returned user errors while creating cart transform.",
         userErrors,
-        functionId
+        functionId,
       });
     }
 
@@ -1473,12 +1642,12 @@ app.post("/api/shopify/cart-transform/ensure", async (_req, res) => {
       created: true,
       functionSource: source,
       functionId,
-      cartTransform: result?.cartTransform
+      cartTransform: result?.cartTransform,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to ensure cart transform."
+      message: error?.message || "Failed to ensure cart transform.",
     });
   }
 });
@@ -1491,7 +1660,7 @@ app.post("/api/shopify/cart-transform/disable", async (_req, res) => {
       return res.json({
         ok: true,
         disabled: false,
-        message: "No existing cart transform found."
+        message: "No existing cart transform found.",
       });
     }
 
@@ -1514,19 +1683,19 @@ app.post("/api/shopify/cart-transform/disable", async (_req, res) => {
         ok: false,
         message: "Shopify returned user errors while disabling cart transform.",
         userErrors,
-        cartTransformId: existingNode.id
+        cartTransformId: existingNode.id,
       });
     }
 
     return res.json({
       ok: true,
       disabled: true,
-      deletedCartTransformId: result?.deletedId || existingNode.id
+      deletedCartTransformId: result?.deletedId || existingNode.id,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to disable cart transform."
+      message: error?.message || "Failed to disable cart transform.",
     });
   }
 });
@@ -1538,7 +1707,7 @@ app.post("/api/quote", async (req, res) => {
       width = 2,
       height = 2.19,
       qty = 10,
-      options = {}
+      options = {},
     } = req.body || {};
 
     const parsedQty = Math.max(10, Number(qty) || 10);
@@ -1549,13 +1718,13 @@ app.post("/api/quote", async (req, res) => {
     const matchedRows = matchRows(pricingRows, productName);
     const quote = quoteFromRows(matchedRows, {
       height: parsedHeight,
-      qty: parsedQty
+      qty: parsedQty,
     });
 
     if (!quote) {
       return res.status(404).json({
         ok: false,
-        message: "No pricing found for this product/size/qty."
+        message: "No pricing found for this product/size/qty.",
       });
     }
 
@@ -1569,7 +1738,7 @@ app.post("/api/quote", async (req, res) => {
       sizeUsed: quote.sizeUsed,
       tierQty: quote.tierQty,
       ts: Date.now(),
-      options
+      options,
     };
 
     const quoteToken = signQuote(payload, QUOTE_SECRET);
@@ -1585,18 +1754,18 @@ app.post("/api/quote", async (req, res) => {
         quote_token: quoteToken,
         quote_qty: String(payload.qty),
         quote_height: String(payload.height),
-        quote_width: String(payload.width)
+        quote_width: String(payload.width),
       },
       tier: {
         minQty: quote.tierQty,
-        label: quote.tierRange
+        label: quote.tierRange,
       },
-      quoteToken
+      quoteToken,
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: err?.message || "Unknown quote error"
+      message: err?.message || "Unknown quote error",
     });
   }
 });
@@ -1606,29 +1775,52 @@ app.post("/api/ai/remove-background", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
   try {
     const { image_url } = req.body || {};
-    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
+    if (!image_url)
+      return res
+        .status(400)
+        .json({ ok: false, message: "image_url is required." });
 
     const response = await fetchWithTimeout(
       "https://queue.fal.run/fal-ai/birefnet",
       {
         method: "POST",
         headers: getFalHeaders(),
-        body: JSON.stringify({ image_url })
+        body: JSON.stringify({ image_url }),
       },
-      AI_TIMEOUT_MS
+      AI_TIMEOUT_MS,
     );
     const payload = await readJsonSafely(response);
     if (!response.ok) {
-      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai birefnet request failed." });
+      return res.status(502).json({
+        ok: false,
+        message:
+          payload?.error ||
+          payload?.message ||
+          "fal.ai birefnet request failed.",
+      });
     }
     const requestId = payload?.request_id || payload?.requestId;
-    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
-    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "birefnet", modelPath: "fal-ai/birefnet" });
-    const compositeIdBg = Buffer.from(JSON.stringify({ modelPath: "fal-ai/birefnet", id: requestId })).toString("base64url");
+    if (!requestId)
+      return res
+        .status(502)
+        .json({ ok: false, message: "fal.ai did not return requestId." });
+    aiRequestMeta.set(requestId, {
+      provider: "fal.ai",
+      model: "birefnet",
+      modelPath: "fal-ai/birefnet",
+    });
+    const compositeIdBg = Buffer.from(
+      JSON.stringify({ modelPath: "fal-ai/birefnet", id: requestId }),
+    ).toString("base64url");
     return res.json({ requestId: compositeIdBg, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start background removal.") });
+    return res.status(isTimeout ? 504 : 500).json({
+      ok: false,
+      message: isTimeout
+        ? "Request timed out."
+        : error?.message || "Failed to start background removal.",
+    });
   }
 });
 
@@ -1637,30 +1829,55 @@ app.post("/api/ai/crop", async (req, res) => {
   if (!enforceAiRateLimit(req, res)) return;
   try {
     const { image_url } = req.body || {};
-    if (!image_url) return res.status(400).json({ ok: false, message: "image_url is required." });
+    if (!image_url)
+      return res
+        .status(400)
+        .json({ ok: false, message: "image_url is required." });
 
-    const cropPrompt = "Tightly crop the image so the patch artwork fills the entire frame with minimal whitespace around the edges. Keep the patch design intact, do not alter or modify the artwork.";
+    const cropPrompt =
+      "Tightly crop the image so the patch artwork fills the entire frame with minimal whitespace around the edges. Keep the patch design intact, do not alter or modify the artwork.";
     const response = await fetchWithTimeout(
       "https://queue.fal.run/fal-ai/flux-pro/kontext/max",
       {
         method: "POST",
         headers: getFalHeaders(),
-        body: JSON.stringify({ prompt: cropPrompt, image_url })
+        body: JSON.stringify({ prompt: cropPrompt, image_url }),
       },
-      AI_TIMEOUT_MS
+      AI_TIMEOUT_MS,
     );
     const payload = await readJsonSafely(response);
     if (!response.ok) {
-      return res.status(502).json({ ok: false, message: payload?.error || payload?.message || "fal.ai crop request failed." });
+      return res.status(502).json({
+        ok: false,
+        message:
+          payload?.error || payload?.message || "fal.ai crop request failed.",
+      });
     }
     const requestId = payload?.request_id || payload?.requestId;
-    if (!requestId) return res.status(502).json({ ok: false, message: "fal.ai did not return requestId." });
-    aiRequestMeta.set(requestId, { provider: "fal.ai", model: "flux-pro-kontext-max", modelPath: "fal-ai/flux-pro/kontext/max" });
-    const compositeIdCrop = Buffer.from(JSON.stringify({ modelPath: "fal-ai/flux-pro/kontext/max", id: requestId })).toString("base64url");
+    if (!requestId)
+      return res
+        .status(502)
+        .json({ ok: false, message: "fal.ai did not return requestId." });
+    aiRequestMeta.set(requestId, {
+      provider: "fal.ai",
+      model: "flux-pro-kontext-max",
+      modelPath: "fal-ai/flux-pro/kontext/max",
+    });
+    const compositeIdCrop = Buffer.from(
+      JSON.stringify({
+        modelPath: "fal-ai/flux-pro/kontext/max",
+        id: requestId,
+      }),
+    ).toString("base64url");
     return res.json({ requestId: compositeIdCrop, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start crop.") });
+    return res.status(isTimeout ? 504 : 500).json({
+      ok: false,
+      message: isTimeout
+        ? "Request timed out."
+        : error?.message || "Failed to start crop.",
+    });
   }
 });
 
@@ -1683,7 +1900,9 @@ async function resolveEditImageUrl(imageUrl) {
     return imageUrl;
   }
   if (!imageUrl.startsWith("/")) {
-    throw new Error("Invalid image path: must be an absolute URL or a path starting with /");
+    throw new Error(
+      "Invalid image path: must be an absolute URL or a path starting with /",
+    );
   }
   if (!FAL_KEY) throw new Error("Missing FAL_KEY environment variable.");
 
@@ -1723,13 +1942,20 @@ app.post("/api/ai/edit", async (req, res) => {
     const { action, imageUrl, prompt } = req.body || {};
 
     if (!action || !EDIT_MODEL_BY_ACTION[action]) {
-      return res.status(400).json({ ok: false, message: "action must be one of remove_background, crop, edit" });
+      return res.status(400).json({
+        ok: false,
+        message: "action must be one of remove_background, crop, edit",
+      });
     }
     if (!imageUrl || typeof imageUrl !== "string") {
-      return res.status(400).json({ ok: false, message: "imageUrl is required" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "imageUrl is required" });
     }
     if (action === "edit" && (!prompt || !String(prompt).trim())) {
-      return res.status(400).json({ ok: false, message: "prompt is required for edit action" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "prompt is required for edit action" });
     }
 
     const resolvedImageUrl = await resolveEditImageUrl(imageUrl);
@@ -1739,15 +1965,25 @@ app.post("/api/ai/edit", async (req, res) => {
     const queueResult = await Promise.race([
       fal.queue.submit(model, { input }),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Fal queue submit timed out")), AI_TIMEOUT_MS)
+        setTimeout(
+          () => reject(new Error("Fal queue submit timed out")),
+          AI_TIMEOUT_MS,
+        ),
       ),
     ]);
 
-    const compositeIdEdit = Buffer.from(JSON.stringify({ model, id: queueResult.request_id })).toString("base64url");
+    const compositeIdEdit = Buffer.from(
+      JSON.stringify({ model, id: queueResult.request_id }),
+    ).toString("base64url");
     return res.json({ requestId: compositeIdEdit, status: "processing" });
   } catch (error) {
     const isTimeout = error?.name === "AbortError";
-    return res.status(isTimeout ? 504 : 500).json({ ok: false, message: isTimeout ? "Request timed out." : (error?.message || "Failed to start edit.") });
+    return res.status(isTimeout ? 504 : 500).json({
+      ok: false,
+      message: isTimeout
+        ? "Request timed out."
+        : error?.message || "Failed to start edit.",
+    });
   }
 });
 
@@ -1772,26 +2008,29 @@ app.post("/api/forms/submit", async (req, res) => {
 
   try {
     // Validate required fields
-    const missingFields = requiredFields.filter(field => req.body[field] === undefined || req.body[field] === null);
+    const missingFields = requiredFields.filter(
+      (field) => req.body[field] === undefined || req.body[field] === null,
+    );
     if (missingFields.length > 0) {
       return res.status(400).json({
         ok: false,
-        message: `Missing required fields: ${missingFields.join(", ")}`
+        message: `Missing required fields: ${missingFields.join(", ")}`,
       });
     }
 
     // Forward to outjackets and neonsigns.us.com with the same payload
     const [result] = await Promise.all([
       submitFormToStore("outjackets", req.body),
-      submitFormToStore("neonsigns", req.body).catch(err =>
-        console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message)),
+      submitFormToStore("neonsigns", req.body).catch((err) =>
+        console.error("[FORM_SUBMIT] neonsigns forward failed:", err?.message),
+      ),
     ]);
 
     if (result.ok) {
       return res.status(200).json({
         ok: true,
         message: "Form submitted successfully",
-        data: result.data
+        data: result.data,
       });
     }
 
@@ -1800,20 +2039,20 @@ app.post("/api/forms/submit", async (req, res) => {
       return res.status(result.status).json({
         ok: false,
         message: result.data?.message || "Failed to submit form",
-        error: result.data
+        error: result.data,
       });
     }
 
     return res.status(502).json({
       ok: false,
-      message: "Store is unreachable. Please try again."
+      message: "Store is unreachable. Please try again.",
     });
   } catch (error) {
     console.error("Form submission error:", error);
     return res.status(500).json({
       ok: false,
       message: "Internal server error while submitting form",
-      error: error?.message
+      error: error?.message,
     });
   }
 });
@@ -1824,34 +2063,53 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
   fileFilter(_req, file, cb) {
     const allowed = [
-      "image/jpeg", "image/jpg", "image/png", "image/gif",
-      "image/webp", "image/svg+xml", "application/pdf",
-      "application/illustrator", "application/postscript",
-      "image/ai", "image/eps",
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "image/svg+xml",
+      "application/pdf",
+      "application/illustrator",
+      "application/postscript",
+      "image/ai",
+      "image/eps",
     ];
     allowed.includes(file.mimetype)
       ? cb(null, true)
-      : cb(new Error("File type not supported. Please upload an image (JPEG, PNG, GIF, WebP, SVG) or document (PDF, AI, EPS)"));
+      : cb(
+          new Error(
+            "File type not supported. Please upload an image (JPEG, PNG, GIF, WebP, SVG) or document (PDF, AI, EPS)",
+          ),
+        );
   },
 });
 
 function buildStoredFileName(originalName) {
   const lastDot = originalName.lastIndexOf(".");
-  const hasExt  = lastDot > 0;
-  const base     = hasExt ? originalName.slice(0, lastDot) : originalName;
-  const ext      = hasExt ? originalName.slice(lastDot).toLowerCase() : "";
-  const safeName = base.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80) || "upload";
-  const suffix   = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const hasExt = lastDot > 0;
+  const base = hasExt ? originalName.slice(0, lastDot) : originalName;
+  const ext = hasExt ? originalName.slice(lastDot).toLowerCase() : "";
+  const safeName =
+    base
+      .replace(/[^\w\s-]/g, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 80) || "upload";
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return `${safeName}-${suffix}${ext}`;
 }
 
 app.options("/api/upload", (_req, res) => {
-  res.set({
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Requested-With",
-    "Access-Control-Max-Age": "86400",
-  }).sendStatus(200);
+  res
+    .set({
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Requested-With",
+      "Access-Control-Max-Age": "86400",
+    })
+    .sendStatus(200);
 });
 
 app.get("/api/upload", (_req, res) => {
@@ -1878,14 +2136,16 @@ async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
       }
     }`,
     {
-      input: [{
-        filename:   fileName,
-        mimeType:   mimetype,
-        resource,
-        fileSize:   String(buffer.length),
-        httpMethod: "PUT",
-      }],
-    }
+      input: [
+        {
+          filename: fileName,
+          mimeType: mimetype,
+          resource,
+          fileSize: String(buffer.length),
+          httpMethod: "PUT",
+        },
+      ],
+    },
   );
 
   const stageErrors = stagedData.stagedUploadsCreate.userErrors;
@@ -1898,9 +2158,12 @@ async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
   const target = stagedData.stagedUploadsCreate.stagedTargets[0];
 
   const uploadRes = await fetch(target.url, {
-    method:  "PUT",
-    headers: { "Content-Type": mimetype, "Content-Length": String(buffer.length) },
-    body:    buffer,
+    method: "PUT",
+    headers: {
+      "Content-Type": mimetype,
+      "Content-Length": String(buffer.length),
+    },
+    body: buffer,
   });
 
   if (!uploadRes.ok) {
@@ -1922,12 +2185,14 @@ async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
       }
     }`,
     {
-      files: [{
-        contentType:    resource,
-        originalSource: target.resourceUrl,
-        filename:       fileName,
-      }],
-    }
+      files: [
+        {
+          contentType: resource,
+          originalSource: target.resourceUrl,
+          filename: fileName,
+        },
+      ],
+    },
   );
 
   const fileErrors = fileData.fileCreate.userErrors;
@@ -1951,19 +2216,25 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 
     const { originalname, mimetype, size, buffer } = req.file;
     const fileName = buildStoredFileName(originalname);
-    const { url: cdnUrl, resourceUrl } = await uploadBufferToShopifyFiles(buffer, mimetype, fileName);
+    const { url: cdnUrl, resourceUrl } = await uploadBufferToShopifyFiles(
+      buffer,
+      mimetype,
+      fileName,
+    );
 
     return res.json({
-      success:     true,
-      url:         cdnUrl,
+      success: true,
+      url: cdnUrl,
       resourceUrl,
-      fileName:    originalname,
-      fileSize:    size,
-      fileType:    mimetype,
+      fileName: originalname,
+      fileSize: size,
+      fileType: mimetype,
     });
-
   } catch (error) {
-    return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to upload file", detail: error?.detail });
+    return res.status(error?.statusCode || 500).json({
+      error: error?.message || "Failed to upload file",
+      detail: error?.detail,
+    });
   }
 });
 
@@ -1973,7 +2244,9 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 app.post("/api/shopify/draft-orders", async (req, res) => {
   const { input } = req.body || {};
   if (!input || typeof input !== "object") {
-    return res.status(400).json({ ok: false, message: "input object is required." });
+    return res
+      .status(400)
+      .json({ ok: false, message: "input object is required." });
   }
 
   try {
@@ -2003,18 +2276,18 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: userErrors[0]?.message || "Shopify returned user errors.",
-        userErrors
+        userErrors,
       });
     }
 
     return res.json({
       ok: true,
-      draftOrder: result?.draftOrder
+      draftOrder: result?.draftOrder,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to create draft order."
+      message: error?.message || "Failed to create draft order.",
     });
   }
 });
@@ -2022,17 +2295,22 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
 // Best-effort cleanup of hidden checkout products if a later step in the
 // multi-item checkout flow fails partway through.
 async function cleanupCheckoutProducts(productIds) {
-  await Promise.all(productIds.map((id) =>
-    shopifyAdminGraphql(`
+  await Promise.all(
+    productIds.map((id) =>
+      shopifyAdminGraphql(
+        `
       mutation DeleteCheckoutProduct($input: ProductDeleteInput!) {
         productDelete(input: $input) {
           userErrors { field message }
         }
       }
-    `, { input: { id } }).catch((err) => {
-      console.error("[CHECKOUT] Cleanup error:", err.message);
-    })
-  ));
+    `,
+        { input: { id } },
+      ).catch((err) => {
+        console.error("[CHECKOUT] Cleanup error:", err.message);
+      }),
+    ),
+  );
 }
 
 // Creates a hidden (DRAFT-priced) Shopify product + variant for a single
@@ -2043,36 +2321,43 @@ async function createCheckoutProductForItem(item) {
     quantity,
     unitPrice: rawUnitPrice,
     imageUrl = "",
-    width  = 2,
+    width = 2,
     height = 2.19,
-    options = {}
+    options = {},
   } = item || {};
 
-  const qty          = Math.max(10, Number(quantity) || 10);
+  const qty = Math.max(10, Number(quantity) || 10);
   const parsedHeight = Math.max(1, Number(height) || 1);
-  const parsedWidth  = Math.max(1, Number(width)  || 1);
+  const parsedWidth = Math.max(1, Number(width) || 1);
 
   const unitPrice = Number(Number(rawUnitPrice || 0).toFixed(2));
   if (!unitPrice || unitPrice <= 0) {
-    const err = new Error("unitPrice is required and must be greater than 0 for every line item.");
+    const err = new Error(
+      "unitPrice is required and must be greater than 0 for every line item.",
+    );
     err.statusCode = 400;
     throw err;
   }
   const total = Number((unitPrice * qty).toFixed(2));
 
   const quotePayload = {
-    productName, width: parsedWidth, height: parsedHeight,
-    qty, unitPrice, total,
-    ts: Date.now(), options
+    productName,
+    width: parsedWidth,
+    height: parsedHeight,
+    qty,
+    unitPrice,
+    total,
+    ts: Date.now(),
+    options,
   };
   const quoteToken = signQuote(quotePayload, QUOTE_SECRET);
 
-  const patchType  = options.patchType  || productName || "Custom Patch";
-  const size       = options.size       || `${parsedWidth}" x ${parsedHeight}"`;
-  const shape      = options.shape      || "";
-  const backing    = options.backing    || "";
-  const border     = options.border     || "";
-  const colors     = options.colors     || "";
+  const patchType = options.patchType || productName || "Custom Patch";
+  const size = options.size || `${parsedWidth}" x ${parsedHeight}"`;
+  const shape = options.shape || "";
+  const backing = options.backing || "";
+  const border = options.border || "";
+  const colors = options.colors || "";
 
   const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
 
@@ -2099,23 +2384,41 @@ async function createCheckoutProductForItem(item) {
   if (resolvedImageUrl) {
     try {
       const imgRes = await fetch(resolvedImageUrl, {
-        headers: { Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5" }
+        headers: {
+          Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+        },
       });
       if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
 
       const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
-      const contentType = (imgRes.headers.get("content-type") || "image/jpeg").split(";")[0].trim();
-      const ext          = contentType.split("/")[1] || "jpg";
-      const fileName      = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const contentType = (imgRes.headers.get("content-type") || "image/jpeg")
+        .split(";")[0]
+        .trim();
+      const ext = contentType.split("/")[1] || "jpg";
+      const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
 
-      const { url: cdnUrl } = await uploadBufferToShopifyFiles(imageBuffer, contentType, fileName);
-      mediaInput = [{ originalSource: cdnUrl, alt: productTitle, mediaContentType: "IMAGE" }];
+      const { url: cdnUrl } = await uploadBufferToShopifyFiles(
+        imageBuffer,
+        contentType,
+        fileName,
+      );
+      mediaInput = [
+        {
+          originalSource: cdnUrl,
+          alt: productTitle,
+          mediaContentType: "IMAGE",
+        },
+      ];
     } catch (err) {
-      console.error("[CHECKOUT] Image re-upload failed, creating product without image:", err.message);
+      console.error(
+        "[CHECKOUT] Image re-upload failed, creating product without image:",
+        err.message,
+      );
     }
   }
 
-  const productData = await shopifyAdminGraphql(`
+  const productData = await shopifyAdminGraphql(
+    `
     mutation CreateCheckoutProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
       productCreate(product: $product, media: $media) {
         product {
@@ -2127,22 +2430,35 @@ async function createCheckoutProductForItem(item) {
         userErrors { field message }
       }
     }
-  `, {
-    product: {
-      title:  productTitle,
-      status: "ACTIVE",
-      tags:   ["custom-patch-checkout", `qty-${qty}`, patchType.toLowerCase().replace(/\s+/g, "-")],
-      metafields: [
-        { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
-      ]
+  `,
+    {
+      product: {
+        title: productTitle,
+        status: "ACTIVE",
+        tags: [
+          "custom-patch-checkout",
+          `qty-${qty}`,
+          patchType.toLowerCase().replace(/\s+/g, "-"),
+        ],
+        metafields: [
+          {
+            namespace: "custom",
+            key: "seo_robots",
+            value: "noindex, nofollow",
+            type: "single_line_text_field",
+          },
+        ],
+      },
+      media: mediaInput,
     },
-    media: mediaInput
-  });
+  );
   const productResult = productData?.productCreate;
   const productErrors = productResult?.userErrors || [];
 
   if (productErrors.length) {
-    const err = new Error(productErrors[0]?.message || "Failed to create product.");
+    const err = new Error(
+      productErrors[0]?.message || "Failed to create product.",
+    );
     err.statusCode = 400;
     err.userErrors = productErrors;
     throw err;
@@ -2153,32 +2469,40 @@ async function createCheckoutProductForItem(item) {
 
   if (!createdVariant?.id) {
     const err = new Error("Product created but variant ID not returned.");
-    err.statusCode       = 502;
+    err.statusCode = 502;
     err.createdProductId = createdProduct?.id;
     throw err;
   }
 
   // Set exact price on the default variant
-  const variantData = await shopifyAdminGraphql(`
+  const variantData = await shopifyAdminGraphql(
+    `
     mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkUpdate(productId: $productId, variants: $variants) {
         productVariants { id price sku }
         userErrors { field message }
       }
     }
-  `, {
-    productId: createdProduct.id,
-    variants: [{
-      id:    createdVariant.id,
-      price: unitPrice.toFixed(2),
-    }]
-  });
-  const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
+  `,
+    {
+      productId: createdProduct.id,
+      variants: [
+        {
+          id: createdVariant.id,
+          price: unitPrice.toFixed(2),
+        },
+      ],
+    },
+  );
+  const variantErrors =
+    variantData?.productVariantsBulkUpdate?.userErrors || [];
 
   if (variantErrors.length) {
-    const err = new Error(variantErrors[0]?.message || "Failed to set variant price.");
-    err.statusCode       = 400;
-    err.userErrors       = variantErrors;
+    const err = new Error(
+      variantErrors[0]?.message || "Failed to set variant price.",
+    );
+    err.statusCode = 400;
+    err.userErrors = variantErrors;
     err.createdProductId = createdProduct.id;
     throw err;
   }
@@ -2186,18 +2510,22 @@ async function createCheckoutProductForItem(item) {
   return {
     productId: createdProduct.id,
     variantId: createdVariant.id,
-    qty, unitPrice, total, quoteToken, productTitle,
+    qty,
+    unitPrice,
+    total,
+    quoteToken,
+    productTitle,
     customAttributes: [
       { key: "_quote_token", value: quoteToken },
-      { key: "Patch Type",   value: patchType },
-      { key: "Size",         value: size },
-      ...(shape   ? [{ key: "Shape",   value: shape   }] : []),
+      { key: "Patch Type", value: patchType },
+      { key: "Size", value: size },
+      ...(shape ? [{ key: "Shape", value: shape }] : []),
       ...(backing ? [{ key: "Backing", value: backing }] : []),
-      ...(border  ? [{ key: "Border",  value: border  }] : []),
-      ...(colors  ? [{ key: "Colors",  value: colors  }] : []),
-      { key: "Quantity",   value: String(qty) },
+      ...(border ? [{ key: "Border", value: border }] : []),
+      ...(colors ? [{ key: "Colors", value: colors }] : []),
+      { key: "Quantity", value: String(qty) },
       { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
-    ]
+    ],
   };
 }
 
@@ -2232,9 +2560,10 @@ async function createCheckoutProductForItem(item) {
 // }
 app.post("/api/shopify/checkout", async (req, res) => {
   const body = req.body || {};
-  const rawItems = Array.isArray(body.lineItems) && body.lineItems.length > 0
-    ? body.lineItems
-    : [body];
+  const rawItems =
+    Array.isArray(body.lineItems) && body.lineItems.length > 0
+      ? body.lineItems
+      : [body];
 
   const createdProductIds = [];
 
@@ -2252,7 +2581,8 @@ app.post("/api/shopify/checkout", async (req, res) => {
     // Shopify uses it directly — no discount override needed.
     const totalQty = builtItems.reduce((sum, i) => sum + i.qty, 0);
 
-    const draftData = await shopifyAdminGraphql(`
+    const draftData = await shopifyAdminGraphql(
+      `
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
           draftOrder {
@@ -2264,19 +2594,22 @@ app.post("/api/shopify/checkout", async (req, res) => {
           userErrors { field message }
         }
       }
-    `, {
-      input: {
-        lineItems: builtItems.map((i) => ({
-          variantId:        i.variantId,
-          quantity:         i.qty,
-          customAttributes: i.customAttributes,
-        })),
-        shippingLine: totalQty < 100
-          ? { title: "Standard Shipping", price: "30.00" }
-          : { title: "Free Shipping",     price: "0.00"  },
-        note: builtItems.map((i) => i.productTitle).join(" + "),
-      }
-    });
+    `,
+      {
+        input: {
+          lineItems: builtItems.map((i) => ({
+            variantId: i.variantId,
+            quantity: i.qty,
+            customAttributes: i.customAttributes,
+          })),
+          shippingLine:
+            totalQty < 100
+              ? { title: "Standard Shipping", price: "30.00" }
+              : { title: "Free Shipping", price: "0.00" },
+          note: builtItems.map((i) => i.productTitle).join(" + "),
+        },
+      },
+    );
 
     const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
     if (draftErrors.length) {
@@ -2284,7 +2617,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: draftErrors[0]?.message || "Failed to create draft order.",
-        userErrors: draftErrors
+        userErrors: draftErrors,
       });
     }
 
@@ -2294,7 +2627,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
       return res.status(502).json({
         ok: false,
         message: "Draft order created but invoiceUrl not returned.",
-        draftOrder
+        draftOrder,
       });
     }
 
@@ -2302,25 +2635,24 @@ app.post("/api/shopify/checkout", async (req, res) => {
       ok: true,
       invoiceUrl: appendCheckoutParams(draftOrder.invoiceUrl),
       draftOrder: {
-        id:         draftOrder.id,
-        name:       draftOrder.name,
+        id: draftOrder.id,
+        name: draftOrder.name,
         totalPrice: draftOrder.totalPrice,
       },
       quotes: builtItems.map((i) => ({
-        unitPrice:  i.unitPrice,
-        total:      i.total,
-        qty:        i.qty,
-        quoteToken: i.quoteToken
-      }))
+        unitPrice: i.unitPrice,
+        total: i.total,
+        qty: i.qty,
+        quoteToken: i.quoteToken,
+      })),
     });
-
   } catch (error) {
     if (error?.createdProductId) createdProductIds.push(error.createdProductId);
     await cleanupCheckoutProducts(createdProductIds);
     return res.status(error?.statusCode || 500).json({
       ok: false,
       message: error?.message || "Failed to create checkout.",
-      ...(error?.userErrors ? { userErrors: error.userErrors } : {})
+      ...(error?.userErrors ? { userErrors: error.userErrors } : {}),
     });
   }
 });
@@ -2333,27 +2665,37 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
   const { input } = req.body || {};
 
   if (!draftOrderId) {
-    return res.status(400).json({ ok: false, message: "draftOrderId is required." });
+    return res
+      .status(400)
+      .json({ ok: false, message: "draftOrderId is required." });
   }
   if (!input || typeof input !== "object") {
-    return res.status(400).json({ ok: false, message: "input object is required." });
+    return res
+      .status(400)
+      .json({ ok: false, message: "input object is required." });
   }
 
-  const gid = draftOrderId.startsWith("gid://") ? draftOrderId : `gid://shopify/DraftOrder/${draftOrderId}`;
+  const gid = draftOrderId.startsWith("gid://")
+    ? draftOrderId
+    : `gid://shopify/DraftOrder/${draftOrderId}`;
 
   // Coerce lineItems numeric fields so string values from clients don't break Shopify
   // Also default requiresShipping to true so shippingLine is accepted by Shopify
   if (Array.isArray(input.lineItems)) {
     input.lineItems = input.lineItems.map((item) => ({
       ...item,
-      ...(item.quantity          != null && { quantity:          parseInt(item.quantity, 10) }),
-      ...(item.originalUnitPrice != null && { originalUnitPrice: parseFloat(item.originalUnitPrice) }),
+      ...(item.quantity != null && { quantity: parseInt(item.quantity, 10) }),
+      ...(item.originalUnitPrice != null && {
+        originalUnitPrice: parseFloat(item.originalUnitPrice),
+      }),
       requiresShipping: item.requiresShipping !== false,
     }));
   }
 
-
-  console.log("[DRAFT_ORDER_UPDATE] input being sent to Shopify:", JSON.stringify(input, null, 2));
+  console.log(
+    "[DRAFT_ORDER_UPDATE] input being sent to Shopify:",
+    JSON.stringify(input, null, 2),
+  );
 
   try {
     const mutation = `
@@ -2402,30 +2744,31 @@ app.patch("/api/shopify/draft-orders/:draftOrderId", async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: userErrors[0]?.message || "Shopify returned user errors.",
-        userErrors
+        userErrors,
       });
     }
 
     const draftOrder = result?.draftOrder;
-    const metafields = draftOrder?.metafields?.edges?.map(({ node }) => node) || [];
+    const metafields =
+      draftOrder?.metafields?.edges?.map(({ node }) => node) || [];
 
     return res.json({
       ok: true,
       draftOrder: {
-        id:           draftOrder?.id,
-        name:         draftOrder?.name,
-        status:       draftOrder?.status,
-        totalPrice:   draftOrder?.totalPrice,
-        invoiceUrl:   appendCheckoutParams(draftOrder?.invoiceUrl),
-        updatedAt:    draftOrder?.updatedAt,
+        id: draftOrder?.id,
+        name: draftOrder?.name,
+        status: draftOrder?.status,
+        totalPrice: draftOrder?.totalPrice,
+        invoiceUrl: appendCheckoutParams(draftOrder?.invoiceUrl),
+        updatedAt: draftOrder?.updatedAt,
         shippingLine: draftOrder?.shippingLine ?? null,
         metafields,
-      }
+      },
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to update draft order."
+      message: error?.message || "Failed to update draft order.",
     });
   }
 });
@@ -2460,37 +2803,49 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
   } = req.body || {};
 
   const required = { email, patchType, quantity, unitPrice, subTotal };
-  const missing = Object.entries(required).filter(([, v]) => v == null || v === "").map(([k]) => k);
+  const missing = Object.entries(required)
+    .filter(([, v]) => v == null || v === "")
+    .map(([k]) => k);
   if (missing.length) {
-    return res.status(400).json({ ok: false, message: `Missing required fields: ${missing.join(", ")}` });
+    return res.status(400).json({
+      ok: false,
+      message: `Missing required fields: ${missing.join(", ")}`,
+    });
   }
 
   const customAttributes = [
-    shape        && { key: "Shape",          value: String(shape) },
-    backing      && { key: "Backing",         value: String(backing) },
-    border       && { key: "Border",          value: String(border) },
-    colors       && { key: "Colors",          value: String(colors) },
-    size         && { key: "Size",            value: String(size) },
-    thread       && { key: "Thread / Notes",  value: String(thread) },
-    phoneNumber  && { key: "Phone",           value: String(phoneNumber) },
-    queryFrom    && { key: "Source URL",      value: String(queryFrom) },
-    ...(Array.isArray(uploadedFiles) ? uploadedFiles.map((file, i) => ({ key: `Artwork File ${i + 1}`, value: String(file?.fileUrl ?? file) })) : []),
+    shape && { key: "Shape", value: String(shape) },
+    backing && { key: "Backing", value: String(backing) },
+    border && { key: "Border", value: String(border) },
+    colors && { key: "Colors", value: String(colors) },
+    size && { key: "Size", value: String(size) },
+    thread && { key: "Thread / Notes", value: String(thread) },
+    phoneNumber && { key: "Phone", value: String(phoneNumber) },
+    queryFrom && { key: "Source URL", value: String(queryFrom) },
+    ...(Array.isArray(uploadedFiles)
+      ? uploadedFiles.map((file, i) => ({
+          key: `Artwork File ${i + 1}`,
+          value: String(file?.fileUrl ?? file),
+        }))
+      : []),
   ].filter(Boolean);
 
   const input = {
     email: String(email),
     note: [
       `Patch Type: ${patchType}`,
-      size        ? `Size: ${size}`               : null,
-      phoneNumber ? `Phone: ${phoneNumber}`        : null,
-      thread      ? `Thread / Notes: ${thread}`    : null,
-      queryFrom   ? `Source: ${queryFrom}`         : null,
-    ].filter(Boolean).join("\n"),
+      size ? `Size: ${size}` : null,
+      phoneNumber ? `Phone: ${phoneNumber}` : null,
+      thread ? `Thread / Notes: ${thread}` : null,
+      queryFrom ? `Source: ${queryFrom}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n"),
     lineItems: [
       {
-        title:             String(patchType),
+        title: String(patchType),
         originalUnitPrice: parseFloat(unitPrice),
-        quantity:          parseInt(quantity, 10),
+        quantity: parseInt(quantity, 10),
         customAttributes,
       },
     ],
@@ -2523,7 +2878,10 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 
     const data = await shopifyAdminGraphql(mutation, { input });
 
-    console.log("[DRAFT_ORDER] mutation response:", JSON.stringify(data, null, 2));
+    console.log(
+      "[DRAFT_ORDER] mutation response:",
+      JSON.stringify(data, null, 2),
+    );
     const result = data?.draftOrderCreate;
     const userErrors = result?.userErrors || [];
     if (userErrors.length) {
@@ -2531,7 +2889,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: userErrors[0]?.message || "Shopify returned user errors.",
-        userErrors
+        userErrors,
       });
     }
 
@@ -2563,15 +2921,23 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       lastMedium,
       lastSource,
       shopifyOrderId: draftOrder?.id,
-      invoiceUrl:     draftOrder?.invoiceUrl,
-      storeType:      "shopify",
+      invoiceUrl: draftOrder?.invoiceUrl,
+      storeType: "shopify",
     };
     // Forward to both stores
     await Promise.all([
-      submitFormToStore("outjackets", formPayload).catch(formErr =>
-        console.error("[FORM_SUBMIT] outjackets forward failed:", formErr?.message)),
-      submitFormToStore("neonsigns", formPayload).catch(formErr =>
-        console.error("[FORM_SUBMIT] neonsigns forward failed:", formErr?.message)),
+      submitFormToStore("outjackets", formPayload).catch((formErr) =>
+        console.error(
+          "[FORM_SUBMIT] outjackets forward failed:",
+          formErr?.message,
+        ),
+      ),
+      submitFormToStore("neonsigns", formPayload).catch((formErr) =>
+        console.error(
+          "[FORM_SUBMIT] neonsigns forward failed:",
+          formErr?.message,
+        ),
+      ),
     ]);
 
     return res.json({
@@ -2579,12 +2945,12 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       draftOrder: {
         ...draftOrder,
         invoiceUrl: appendCheckoutParams(draftOrder?.invoiceUrl),
-      }
+      },
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to create draft order."
+      message: error?.message || "Failed to create draft order.",
     });
   }
 });
@@ -2607,25 +2973,31 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
   const qty = parseInt(quantity, 10);
   if (!qty || qty < 1) {
-    return res.status(400).json({ ok: false, message: "quantity must be a positive integer." });
+    return res
+      .status(400)
+      .json({ ok: false, message: "quantity must be a positive integer." });
   }
 
   try {
     // ── Step 1: build product title + description ─────────────────────────────
-    const borderValue  = border || broder || "";
+    const borderValue = border || broder || "";
     const productTitle = [
       "Manual Order",
       `Qty: ${qty}`,
-      backing     ? `Backing: ${backing}`     : null,
-      borderValue ? `Border: ${borderValue}`  : null,
-    ].filter(Boolean).join(" | ");
+      backing ? `Backing: ${backing}` : null,
+      borderValue ? `Border: ${borderValue}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
 
     const descriptionLines = [
       `Quantity: ${qty}`,
-      backing     ? `Backing: ${backing}`     : null,
-      borderValue ? `Border: ${borderValue}`  : null,
-      shipping    ? `Shipping: ${shipping}`   : null,
-    ].filter(Boolean).join("\n");
+      backing ? `Backing: ${backing}` : null,
+      borderValue ? `Border: ${borderValue}` : null,
+      shipping ? `Shipping: ${shipping}` : null,
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     // ── Step 2: resolve image ─────────────────────────────────────────────────
     const resolvedImageUrl = productImage
@@ -2635,11 +3007,18 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
       : null;
 
     const mediaInput = resolvedImageUrl
-      ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+      ? [
+          {
+            originalSource: resolvedImageUrl,
+            alt: productTitle,
+            mediaContentType: "IMAGE",
+          },
+        ]
       : [];
 
     // ── Step 3: create DRAFT product ─────────────────────────────────────────
-    const productData = await shopifyAdminGraphql(`
+    const productData = await shopifyAdminGraphql(
+      `
       mutation CreateManualProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
         productCreate(product: $product, media: $media) {
           product {
@@ -2649,18 +3028,25 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
           userErrors { field message }
         }
       }
-    `, {
-      product: {
-        title:       productTitle,
-        descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
-        status:      "ACTIVE",
-        tags:        ["manual-order", `qty-${qty}`],
-        metafields: [
-          { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" }
-        ]
+    `,
+      {
+        product: {
+          title: productTitle,
+          descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
+          status: "ACTIVE",
+          tags: ["manual-order", `qty-${qty}`],
+          metafields: [
+            {
+              namespace: "custom",
+              key: "seo_robots",
+              value: "noindex, nofollow",
+              type: "single_line_text_field",
+            },
+          ],
+        },
+        media: mediaInput,
       },
-      media: mediaInput,
-    });
+    );
 
     const productErrors = productData?.productCreate?.userErrors || [];
     if (productErrors.length) {
@@ -2674,24 +3060,31 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     const createdProduct = productData?.productCreate?.product;
     const createdVariant = createdProduct?.variants?.nodes?.[0];
     if (!createdVariant?.id) {
-      return res.status(502).json({ ok: false, message: "Product created but variant ID not returned." });
+      return res.status(502).json({
+        ok: false,
+        message: "Product created but variant ID not returned.",
+      });
     }
 
     // ── Step 4: set variant price (use provided price or default to 0.00) ─────
     const unitPrice = parseFloat(price) || 0;
-    const variantData = await shopifyAdminGraphql(`
+    const variantData = await shopifyAdminGraphql(
+      `
       mutation SetVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) {
           productVariants { id price }
           userErrors { field message }
         }
       }
-    `, {
-      productId: createdProduct.id,
-      variants:  [{ id: createdVariant.id, price: unitPrice.toFixed(2) }],
-    });
+    `,
+      {
+        productId: createdProduct.id,
+        variants: [{ id: createdVariant.id, price: unitPrice.toFixed(2) }],
+      },
+    );
 
-    const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
+    const variantErrors =
+      variantData?.productVariantsBulkUpdate?.userErrors || [];
     if (variantErrors.length) {
       return res.status(400).json({
         ok: false,
@@ -2707,7 +3100,8 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     };
 
     // ── Step 6: create draft order ────────────────────────────────────────────
-    const draftData = await shopifyAdminGraphql(`
+    const draftData = await shopifyAdminGraphql(
+      `
       mutation draftOrderCreate($input: DraftOrderInput!) {
         draftOrderCreate(input: $input) {
           draftOrder {
@@ -2720,26 +3114,30 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
           userErrors { field message }
         }
       }
-    `, {
-      input: {
-        lineItems: [{
-          variantId: createdVariant.id,
-          quantity:  qty,
-          customAttributes: [
-            { key: "Quantity",   value: String(qty) },
-            backing     ? { key: "Backing", value: backing }       : null,
-            borderValue ? { key: "Border",  value: borderValue }   : null,
-          ].filter(Boolean),
-        }],
-        shippingLine,
-        note: productTitle,
-        ...(email && { email }),
-        ...(customerName && {
-          shippingAddress: { firstName: customerName },
-          billingAddress:  { firstName: customerName },
-        }),
+    `,
+      {
+        input: {
+          lineItems: [
+            {
+              variantId: createdVariant.id,
+              quantity: qty,
+              customAttributes: [
+                { key: "Quantity", value: String(qty) },
+                backing ? { key: "Backing", value: backing } : null,
+                borderValue ? { key: "Border", value: borderValue } : null,
+              ].filter(Boolean),
+            },
+          ],
+          shippingLine,
+          note: productTitle,
+          ...(email && { email }),
+          ...(customerName && {
+            shippingAddress: { firstName: customerName },
+            billingAddress: { firstName: customerName },
+          }),
+        },
       },
-    });
+    );
 
     const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
     if (draftErrors.length) {
@@ -2752,21 +3150,20 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
     const draftOrder = draftData?.draftOrderCreate?.draftOrder;
     return res.json({
-      ok:         true,
-      productId:  createdProduct.id,
+      ok: true,
+      productId: createdProduct.id,
       draftOrder: {
-        id:         draftOrder?.id,
-        name:       draftOrder?.name,
-        status:     draftOrder?.status,
+        id: draftOrder?.id,
+        name: draftOrder?.name,
+        status: draftOrder?.status,
         totalPrice: draftOrder?.totalPrice,
         invoiceUrl: appendCheckoutParams(draftOrder?.invoiceUrl),
       },
     });
-
   } catch (error) {
     console.error("[MANUAL_DRAFT_ORDER]", error?.message);
     return res.status(500).json({
-      ok:      false,
+      ok: false,
       message: error?.message || "Failed to create manual draft order.",
     });
   }
@@ -2783,8 +3180,9 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
     return res.status(400).json({ ok: false, message: "orderId is required." });
   }
 
-
-  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/DraftOrder/${orderId}`;
+  const gid = orderId.startsWith("gid://")
+    ? orderId
+    : `gid://shopify/DraftOrder/${orderId}`;
 
   try {
     const mutation = `
@@ -2816,18 +3214,18 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
       return res.status(400).json({
         ok: false,
         message: userErrors[0]?.message || "Shopify returned user errors.",
-        userErrors
+        userErrors,
       });
     }
 
     return res.json({
       ok: true,
-      draftOrderId: result?.draftOrder?.id || gid
+      draftOrderId: result?.draftOrder?.id || gid,
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to send draft order invoice."
+      message: error?.message || "Failed to send draft order invoice.",
     });
   }
 });
@@ -2842,13 +3240,16 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
   }
 
   try {
-    const API_BASE_URL = "https://neonsigns.us.com/api/pricing";
+    const API_BASE_URL =
+      "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
     const response = await fetch(
-      `${API_BASE_URL}/by-page-title?title=${encodeURIComponent(title)}`
+      `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`,
     );
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: "Failed to fetch pricing data" });
+      return res
+        .status(response.status)
+        .json({ error: "Failed to fetch pricing data" });
     }
 
     const backendData = await response.json();
@@ -2861,11 +3262,23 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
           if (!sizeGroups[sizeKey]) {
             sizeGroups[sizeKey] = {
               size: sizeKey,
-              qty10: "0", qty20: "0", qty25: "0", qty50: "0",
-              qty75: "0", qty100: "0", qty200: "0", qty250: "0",
-              qty300: "0", qty500: "0", qty700: "0", qty750: "0",
-              qty1000: "0", qty1500: "0", qty2000: "0",
-              qty5000: "0", qty10000: "0",
+              qty10: "0",
+              qty20: "0",
+              qty25: "0",
+              qty50: "0",
+              qty75: "0",
+              qty100: "0",
+              qty200: "0",
+              qty250: "0",
+              qty300: "0",
+              qty500: "0",
+              qty700: "0",
+              qty750: "0",
+              qty1000: "0",
+              qty1500: "0",
+              qty2000: "0",
+              qty5000: "0",
+              qty10000: "0",
             };
           }
           sizeGroups[sizeKey][`qty${pricing.quantity}`] = pricing.price;
@@ -2888,7 +3301,9 @@ async function getProductPublicationInputs() {
   const data = await shopifyAdminGraphql(`
     query { publications(first: 50) { nodes { id } } }
   `);
-  cachedProductPublicationInputs = data.publications.nodes.map((n) => ({ publicationId: n.id }));
+  cachedProductPublicationInputs = data.publications.nodes.map((n) => ({
+    publicationId: n.id,
+  }));
   return cachedProductPublicationInputs;
 }
 
@@ -2928,39 +3343,81 @@ app.post("/api/shopify/products", async (req, res) => {
   }
 
   // Step 1: Create product + attach media in one mutation
-  const mediaInput = Array.isArray(images) && images.length > 0
-    ? images.map((img) => ({
-        originalSource: img.url,
-        alt: img.altText ?? title,
-        mediaContentType: "IMAGE",
-      }))
-    : [];
+  const mediaInput =
+    Array.isArray(images) && images.length > 0
+      ? images.map((img) => ({
+          originalSource: img.url,
+          alt: img.altText ?? title,
+          mediaContentType: "IMAGE",
+        }))
+      : [];
 
   const customMetafields = [
-    backing    && { namespace: "custom", key: "backing",    value: String(backing),    type: "single_line_text_field" },
-    shape      && { namespace: "custom", key: "shape",      value: String(shape),      type: "single_line_text_field" },
-    background && { namespace: "custom", key: "background", value: String(background), type: "single_line_text_field" },
-    border            && { namespace: "custom", key: "border",            value: String(border),            type: "single_line_text_field" },
-    color             && { namespace: "custom", key: "color",             value: String(color),             type: "single_line_text_field" },
-    product_quantity  && { namespace: "custom", key: "product_quantity",  value: String(parseInt(product_quantity, 10)),  type: "number_integer" },
-    shipping          && { namespace: "custom", key: "shipping",          value: String(parseInt(shipping, 10)),          type: "number_integer" },
-    { namespace: "custom", key: "seo_robots", value: "noindex, nofollow", type: "single_line_text_field" },
+    backing && {
+      namespace: "custom",
+      key: "backing",
+      value: String(backing),
+      type: "single_line_text_field",
+    },
+    shape && {
+      namespace: "custom",
+      key: "shape",
+      value: String(shape),
+      type: "single_line_text_field",
+    },
+    background && {
+      namespace: "custom",
+      key: "background",
+      value: String(background),
+      type: "single_line_text_field",
+    },
+    border && {
+      namespace: "custom",
+      key: "border",
+      value: String(border),
+      type: "single_line_text_field",
+    },
+    color && {
+      namespace: "custom",
+      key: "color",
+      value: String(color),
+      type: "single_line_text_field",
+    },
+    product_quantity && {
+      namespace: "custom",
+      key: "product_quantity",
+      value: String(parseInt(product_quantity, 10)),
+      type: "number_integer",
+    },
+    shipping && {
+      namespace: "custom",
+      key: "shipping",
+      value: String(parseInt(shipping, 10)),
+      type: "number_integer",
+    },
+    {
+      namespace: "custom",
+      key: "seo_robots",
+      value: "noindex, nofollow",
+      type: "single_line_text_field",
+    },
   ].filter(Boolean);
 
   const productInput = {
     title,
     status: "ACTIVE",
-    ...(templateSuffix          && { templateSuffix }),
-    ...(vendor                  && { vendor }),
-    ...(productType             && { productType }),
-    ...(tags                    && { tags }),
-    ...(options                 && { productOptions: options }),
+    ...(templateSuffix && { templateSuffix }),
+    ...(vendor && { vendor }),
+    ...(productType && { productType }),
+    ...(tags && { tags }),
+    ...(options && { productOptions: options }),
     ...(customMetafields.length && { metafields: customMetafields }),
   };
 
   let createdProduct;
   try {
-    const data = await shopifyAdminGraphql(`
+    const data = await shopifyAdminGraphql(
+      `
       mutation CreateProductWithMedia($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
         productCreate(product: $product, media: $media) {
           product {
@@ -2979,16 +3436,26 @@ app.post("/api/shopify/products", async (req, res) => {
           userErrors { field message }
         }
       }
-    `, { product: productInput, media: mediaInput });
+    `,
+      { product: productInput, media: mediaInput },
+    );
 
     if (data.productCreate.userErrors.length > 0) {
-      return res.status(422).json({ ok: false, message: "Product creation failed", detail: data.productCreate.userErrors });
+      return res.status(422).json({
+        ok: false,
+        message: "Product creation failed",
+        detail: data.productCreate.userErrors,
+      });
     }
 
     createdProduct = data.productCreate.product;
   } catch (err) {
     console.error("Product creation error:", err.message);
-    return res.status(500).json({ ok: false, message: "Failed to create product", detail: err.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Failed to create product",
+      detail: err.message,
+    });
   }
 
   // Step 2: Update default variant price
@@ -3000,12 +3467,13 @@ app.post("/api/shopify/products", async (req, res) => {
       ...(i === 0 && defaultVariantId ? { id: defaultVariantId } : {}),
       price: String(v.price ?? "0.00"),
       ...(v.compareAtPrice && { compareAtPrice: String(v.compareAtPrice) }),
-      ...(v.sku            && { sku: v.sku }),
+      ...(v.sku && { sku: v.sku }),
       inventoryItem: { tracked: true },
     }));
 
     try {
-      const data = await shopifyAdminGraphql(`
+      const data = await shopifyAdminGraphql(
+        `
         mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
           productVariantsBulkUpdate(productId: $productId, variants: $variants) {
             productVariants {
@@ -3015,26 +3483,39 @@ app.post("/api/shopify/products", async (req, res) => {
             userErrors { field message }
           }
         }
-      `, { productId: createdProduct.id, variants: variantsInput });
+      `,
+        { productId: createdProduct.id, variants: variantsInput },
+      );
 
       if (data.productVariantsBulkUpdate.userErrors.length > 0) {
-        return res.status(422).json({ ok: false, message: "Variant update failed", detail: data.productVariantsBulkUpdate.userErrors, product: createdProduct });
+        return res.status(422).json({
+          ok: false,
+          message: "Variant update failed",
+          detail: data.productVariantsBulkUpdate.userErrors,
+          product: createdProduct,
+        });
       }
 
       updatedVariants = data.productVariantsBulkUpdate.productVariants;
     } catch (err) {
       console.error("Variant update error:", err.message);
-      return res.status(500).json({ ok: false, message: "Product created but variant update failed", detail: err.message });
+      return res.status(500).json({
+        ok: false,
+        message: "Product created but variant update failed",
+        detail: err.message,
+      });
     }
   }
 
   // Step 3: Set inventory to 10 units
-  const inventoryItemId = createdProduct.variants?.nodes?.[0]?.inventoryItem?.id;
+  const inventoryItemId =
+    createdProduct.variants?.nodes?.[0]?.inventoryItem?.id;
   const locationId = await getProductLocationId();
 
   if (inventoryItemId && locationId) {
     try {
-      const invData = await shopifyAdminGraphql(`
+      const invData = await shopifyAdminGraphql(
+        `
         mutation SetVariantInventory($inventoryItemId: ID!, $locationId: ID!, $quantity: Int!, $idempotencyKey: String!) {
           inventorySetQuantities(
             input: {
@@ -3053,15 +3534,20 @@ app.post("/api/shopify/products", async (req, res) => {
             userErrors { code field message }
           }
         }
-      `, {
-        inventoryItemId,
-        locationId,
-        quantity: parseInt(quantity, 10),
-        idempotencyKey: `set-inventory-${inventoryItemId}-${Date.now()}`,
-      });
+      `,
+        {
+          inventoryItemId,
+          locationId,
+          quantity: parseInt(quantity, 10),
+          idempotencyKey: `set-inventory-${inventoryItemId}-${Date.now()}`,
+        },
+      );
 
       if (invData.inventorySetQuantities.userErrors?.length > 0) {
-        console.warn("Inventory set warnings:", invData.inventorySetQuantities.userErrors);
+        console.warn(
+          "Inventory set warnings:",
+          invData.inventorySetQuantities.userErrors,
+        );
       }
     } catch (err) {
       console.error("Inventory set error:", err.message);
@@ -3073,7 +3559,8 @@ app.post("/api/shopify/products", async (req, res) => {
   try {
     const publicationInputs = await getProductPublicationInputs();
     if (publicationInputs.length > 0) {
-      const pubData = await shopifyAdminGraphql(`
+      const pubData = await shopifyAdminGraphql(
+        `
         mutation PublishProductToAllPublications($productId: ID!, $inputs: [PublicationInput!]!) {
           publishablePublish(id: $productId, input: $inputs) {
             publishable {
@@ -3082,13 +3569,16 @@ app.post("/api/shopify/products", async (req, res) => {
             userErrors { field message }
           }
         }
-      `, { productId: createdProduct.id, inputs: publicationInputs });
+      `,
+        { productId: createdProduct.id, inputs: publicationInputs },
+      );
 
       const published = pubData.publishablePublish;
       if (published.userErrors?.length > 0) {
         console.warn("Publish warnings:", published.userErrors);
       } else {
-        onlineStoreUrl = published.publishable?.onlineStoreUrl ?? onlineStoreUrl;
+        onlineStoreUrl =
+          published.publishable?.onlineStoreUrl ?? onlineStoreUrl;
       }
     }
   } catch (err) {
@@ -3110,23 +3600,37 @@ app.delete("/api/shopify/products/:id", async (req, res) => {
     : `gid://shopify/Product/${req.params.id}`;
 
   try {
-    const data = await shopifyAdminGraphql(`
+    const data = await shopifyAdminGraphql(
+      `
       mutation productDelete($id: ID!) {
         productDelete(input: { id: $id }) {
           deletedProductId
           userErrors { field message }
         }
       }
-    `, { id });
+    `,
+      { id },
+    );
 
     if (data.productDelete.userErrors.length > 0) {
-      return res.status(422).json({ ok: false, message: "Failed to delete product", detail: data.productDelete.userErrors });
+      return res.status(422).json({
+        ok: false,
+        message: "Failed to delete product",
+        detail: data.productDelete.userErrors,
+      });
     }
 
-    return res.json({ ok: true, deletedProductId: data.productDelete.deletedProductId });
+    return res.json({
+      ok: true,
+      deletedProductId: data.productDelete.deletedProductId,
+    });
   } catch (err) {
     console.error("Product delete error:", err.message);
-    return res.status(500).json({ ok: false, message: "Failed to delete product", detail: err.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Failed to delete product",
+      detail: err.message,
+    });
   }
 });
 
@@ -3189,7 +3693,7 @@ function summarizeOrderFees(order) {
     totalFees: Number(totalFees.toFixed(2)),
     netAmount: Number((orderTotal - totalFees).toFixed(2)),
     currency: order.totalPriceSet.shopMoney.currencyCode,
-    feeBreakdown: feeNames.join(" | ")
+    feeBreakdown: feeNames.join(" | "),
   };
 }
 
@@ -3202,7 +3706,9 @@ app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
     return res.status(400).json({ ok: false, message: "orderId is required." });
   }
 
-  const gid = orderId.startsWith("gid://") ? orderId : `gid://shopify/Order/${orderId}`;
+  const gid = orderId.startsWith("gid://")
+    ? orderId
+    : `gid://shopify/Order/${orderId}`;
 
   try {
     const query = `
@@ -3232,14 +3738,16 @@ app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
     const data = await shopifyAdminGraphql(query, { id: gid });
 
     if (!data.order) {
-      return res.status(404).json({ ok: false, message: `Order ${orderId} not found.` });
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${orderId} not found.` });
     }
 
     return res.json({ ok: true, order: summarizeOrderFees(data.order) });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to fetch order fees."
+      message: error?.message || "Failed to fetch order fees.",
     });
   }
 });
@@ -3255,7 +3763,10 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
 
     while (hasNextPage && orders.length < limit) {
       const pageSize = Math.min(50, limit - orders.length) || 50;
-      const data = await shopifyAdminGraphql(ORDERS_WITH_FEES_QUERY, { first: pageSize, after });
+      const data = await shopifyAdminGraphql(ORDERS_WITH_FEES_QUERY, {
+        first: pageSize,
+        after,
+      });
       const { edges, pageInfo } = data.orders;
       for (const { node } of edges) orders.push(node);
       hasNextPage = pageInfo.hasNextPage;
@@ -3265,22 +3776,52 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
     const rows = orders.map(summarizeOrderFees);
     const summary = {
       orderCount: rows.length,
-      totalSales: Number(rows.reduce((sum, r) => sum + r.orderTotal, 0).toFixed(2)),
-      totalFees: Number(rows.reduce((sum, r) => sum + r.totalFees, 0).toFixed(2)),
-      totalNet: Number(rows.reduce((sum, r) => sum + r.netAmount, 0).toFixed(2))
+      totalSales: Number(
+        rows.reduce((sum, r) => sum + r.orderTotal, 0).toFixed(2),
+      ),
+      totalFees: Number(
+        rows.reduce((sum, r) => sum + r.totalFees, 0).toFixed(2),
+      ),
+      totalNet: Number(
+        rows.reduce((sum, r) => sum + r.netAmount, 0).toFixed(2),
+      ),
     };
 
     if (format === "csv") {
-      const header = ["Order", "Order ID", "Created At", "Financial Status", "Order Total", "Shopify Fee", "Net Amount", "Currency", "Fee Breakdown"];
+      const header = [
+        "Order",
+        "Order ID",
+        "Created At",
+        "Financial Status",
+        "Order Total",
+        "Shopify Fee",
+        "Net Amount",
+        "Currency",
+        "Fee Breakdown",
+      ];
       const lines = [header.join(",")];
       for (const r of rows) {
-        lines.push([
-          r.orderName, r.orderId, r.createdAt, r.financialStatus,
-          r.orderTotal, r.totalFees, r.netAmount, r.currency, r.feeBreakdown
-        ].map(csvEscape).join(","));
+        lines.push(
+          [
+            r.orderName,
+            r.orderId,
+            r.createdAt,
+            r.financialStatus,
+            r.orderTotal,
+            r.totalFees,
+            r.netAmount,
+            r.currency,
+            r.feeBreakdown,
+          ]
+            .map(csvEscape)
+            .join(","),
+        );
       }
       res.set("Content-Type", "text/csv");
-      res.set("Content-Disposition", "attachment; filename=orders-with-fees.csv");
+      res.set(
+        "Content-Disposition",
+        "attachment; filename=orders-with-fees.csv",
+      );
       return res.send(lines.join("\n"));
     }
 
@@ -3288,7 +3829,7 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Failed to fetch orders and fees."
+      message: error?.message || "Failed to fetch orders and fees.",
     });
   }
 });
@@ -3297,7 +3838,8 @@ app.use((error, _req, res, next) => {
   if (error instanceof SyntaxError && error.status === 400 && "body" in error) {
     return res.status(400).json({
       ok: false,
-      message: "Invalid JSON body. Please send valid JSON with Content-Type: application/json."
+      message:
+        "Invalid JSON body. Please send valid JSON with Content-Type: application/json.",
     });
   }
   return next(error);
