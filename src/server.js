@@ -2969,6 +2969,8 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     price,
     email,
     customerName,
+    size,
+    productTitle: customProductTitle,
   } = req.body || {};
 
   const qty = parseInt(quantity, 10);
@@ -2981,7 +2983,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
   try {
     // ── Step 1: build product title + description ─────────────────────────────
     const borderValue = border || broder || "";
-    const productTitle = [
+    const productTitle = customProductTitle || [
       "Manual Order",
       `Qty: ${qty}`,
       backing ? `Backing: ${backing}` : null,
@@ -2992,6 +2994,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
     const descriptionLines = [
       `Quantity: ${qty}`,
+      size ? `Size: ${size}` : null,
       backing ? `Backing: ${backing}` : null,
       borderValue ? `Border: ${borderValue}` : null,
       shipping ? `Shipping: ${shipping}` : null,
@@ -3034,7 +3037,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
           title: productTitle,
           descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
           status: "ACTIVE",
-          tags: ["manual-order", `qty-${qty}`],
+          tags: ["manual-order", `qty-${qty}`, ...(size ? [`size-${size}`] : [])],
           metafields: [
             {
               namespace: "custom",
@@ -3123,6 +3126,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
               quantity: qty,
               customAttributes: [
                 { key: "Quantity", value: String(qty) },
+                size ? { key: "Size", value: String(size) } : null,
                 backing ? { key: "Backing", value: backing } : null,
                 borderValue ? { key: "Border", value: borderValue } : null,
               ].filter(Boolean),
