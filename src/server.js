@@ -7,7 +7,7 @@ import multer from "multer";
 import { fal } from "@fal-ai/client";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
-import { submitFormToStore } from "./formQueue.js";
+import { submitFormToStore, handleDelivery, getQStashReceiver } from "./formQueue.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -3831,6 +3831,42 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
       ok: false,
       message: error?.message || "Failed to fetch orders and fees.",
     });
+  }
+});
+
+// ── POST /api/queue/deliver ───────────────────────────────────────────────────
+// QStash calls this endpoint to retry a failed form submission.
+// We verify the QStash signature, attempt delivery, and re-publish to QStash
+// on failure with a longer delay (our own backoff chain). Always returns 200
+// so QStash does not retry on its own — we control the full retry schedule.
+app.post("/api/queue/deliver", express.raw({ type: "application/json" }), async (req, res) => {
+  const signature = req.headers["upstash-signature"];
+  const rawBody   = req.body instanceof Buffer ? req.body.toString() : JSON.stringify(req.body);
+
+  try {
+    await getQStashReceiver().verify({ signature, body: rawBody });
+  } catch (_err) {
+    return res.status(401).json({ ok: false, message: "Invalid QStash signature." });
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawBody);
+  } catch (_err) {
+    return res.status(400).json({ ok: false, message: "Invalid JSON body." });
+  }
+
+  const { store, payload, submissionId, attempt } = parsed;
+  if (!store || !payload || !submissionId || !attempt) {
+    return res.status(400).json({ ok: false, message: "Missing required fields." });
+  }
+
+  try {
+    const result = await handleDelivery({ store, payload, submissionId, attempt });
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error("[QUEUE_DELIVER] Unexpected error:", error?.message);
+    return res.status(200).json({ ok: false, message: error?.message });
   }
 });
 
