@@ -3107,7 +3107,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         product: {
           title: productTitle,
           descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
-          status: "ACTIVE",
+          status: "DRAFT",
           tags: [
             "manual-order",
             `qty-${qty}`,
