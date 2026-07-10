@@ -2674,6 +2674,7 @@ app.post("/api/shopify/checkout", async (req, res) => {
               ? { title: "Standard Shipping", price: "30.00" }
               : { title: "Free Shipping", price: "0.00" },
           note: builtItems.map((i) => i.productTitle).join(" + "),
+          tags: ["custom-patch-checkout"],
         },
       },
     );
@@ -3210,6 +3211,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
           ],
           shippingLine,
           note: productTitle,
+          tags: ["manual-order"],
           ...(email && { email }),
           ...(customerName && {
             shippingAddress: { firstName: customerName },
