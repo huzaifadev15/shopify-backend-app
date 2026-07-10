@@ -51,6 +51,9 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
 const SHOPIFY_API_KEY = (process.env.SHOPIFY_API_KEY || "").trim();
 const SHOPIFY_API_SECRET = (process.env.SHOPIFY_API_SECRET || "").trim();
 const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
+const ERP_DASHBOARD_IMAGE_UPLOAD_URL =
+  process.env.ERP_DASHBOARD_IMAGE_UPLOAD_URL ||
+  "https://erp.threadx.pk/api/upload-dashboard-image";
 const SHOPIFY_SCOPES = (
   process.env.SHOPIFY_SCOPES ||
   "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications"
@@ -2120,6 +2123,66 @@ app.get("/api/upload", (_req, res) => {
   res.json({ message: "File upload endpoint — Shopify CDN" });
 });
 
+app.options("/api/dashboardimage-upload", (_req, res) => {
+  res
+    .set({
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Requested-With",
+      "Access-Control-Max-Age": "86400",
+    })
+    .sendStatus(200);
+});
+
+app.get("/api/dashboardimage-upload", (_req, res) => {
+  res.json({ message: "Dashboard image upload proxy endpoint" });
+});
+
+app.post("/api/dashboardimage-upload", upload.single("file"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      error: "No file uploaded. Send a multipart field named 'file'.",
+    });
+  }
+
+  try {
+    const form = new FormData();
+
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (Array.isArray(value)) {
+        value.forEach((item) => form.append(key, item));
+      } else if (value !== undefined && value !== null) {
+        form.append(key, value);
+      }
+    }
+
+    form.append(
+      "file",
+      new Blob([req.file.buffer], { type: req.file.mimetype }),
+      req.file.originalname,
+    );
+
+    const erpResponse = await fetch(ERP_DASHBOARD_IMAGE_UPLOAD_URL, {
+      method: "POST",
+      body: form,
+    });
+
+    const contentType = erpResponse.headers.get("content-type") || "";
+    const body = await erpResponse.text();
+
+    res.status(erpResponse.status);
+    if (contentType) res.type(contentType);
+    return res.send(body);
+  } catch (error) {
+    console.error("[DASHBOARD_IMAGE_UPLOAD] Proxy error:", error);
+    return res.status(502).json({
+      success: false,
+      error: error?.message || "Failed to proxy dashboard image upload",
+    });
+  }
+});
 // Uploads raw bytes to Shopify's own Files storage (stagedUploadsCreate → PUT
 // → fileCreate) and returns the resulting cdn.shopify.com URL. Unlike a
 // remote URL passed straight into productCreate's media field, this gives
