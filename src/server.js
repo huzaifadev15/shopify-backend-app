@@ -3759,15 +3759,57 @@ function csvEscape(value) {
   return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
 }
 
-function summarizeOrderFees(order) {
+// Fetch fee data from the Shopify Payments REST balance transactions API.
+// GraphQL transaction.fees[] is empty for most Shopify Payments orders;
+// the REST endpoint is the authoritative source.
+// Returns { fee, net } or null if not found / not a Shopify Payments order.
+async function fetchRestBalanceFee(numericOrderId, orderDate) {
+  if (!SHOP_DOMAIN || !SHOPIFY_ADMIN_ACCESS_TOKEN) return null;
+  try {
+    const d = new Date(orderDate);
+    const dateMin = new Date(d.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const dateMax = new Date(d.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const url =
+      `https://${SHOP_DOMAIN}/admin/api/${SHOPIFY_API_VERSION}` +
+      `/shopify_payments/balance/transactions.json` +
+      `?source_type=charge&date_min=${encodeURIComponent(dateMin)}&date_max=${encodeURIComponent(dateMax)}&limit=250`;
+    const resp = await fetch(url, {
+      headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_ACCESS_TOKEN },
+    });
+    if (!resp.ok) return null;
+    const { transactions = [] } = await resp.json();
+    const match = transactions.find(
+      (t) => String(t.source_order_id) === String(numericOrderId),
+    );
+    return match ? { fee: parseFloat(match.fee), net: parseFloat(match.net) } : null;
+  } catch {
+    return null;
+  }
+}
+
+function summarizeOrderFees(order, restFee = null) {
   let totalFees = 0;
   const feeNames = [];
   for (const tx of order.transactions || []) {
+    // Only count fees on successful sale/capture transactions
+    if (
+      tx.status !== "SUCCESS" ||
+      (tx.kind !== "SALE" && tx.kind !== "CAPTURE")
+    ) {
+      continue;
+    }
     for (const fee of tx.fees || []) {
       totalFees += parseFloat(fee.amount.amount);
       feeNames.push(fee.flatFeeName || fee.rateName || fee.type);
     }
   }
+
+  // Fall back to REST balance transaction fee when GraphQL returns nothing
+  const feeSource = totalFees === 0 && restFee ? "shopify_payments_rest" : "graphql";
+  if (totalFees === 0 && restFee) {
+    totalFees = restFee.fee;
+  }
+
   const orderTotal = parseFloat(order.totalPriceSet.shopMoney.amount);
   return {
     orderName: order.name,
@@ -3778,65 +3820,13 @@ function summarizeOrderFees(order) {
     totalFees: Number(totalFees.toFixed(2)),
     netAmount: Number((orderTotal - totalFees).toFixed(2)),
     currency: order.totalPriceSet.shopMoney.currencyCode,
-    feeBreakdown: feeNames.join(" | "),
+    feeBreakdown: feeNames.join(" | ") || (restFee ? "Shopify Payments" : ""),
+    feeSource,
   };
 }
 
-// ── GET /api/shopify/orders/:orderId/fees ────────────────────────────────────
-// Returns the transaction fee breakdown for a single order.
-// orderId can be a numeric ID or full GID (gid://shopify/Order/123).
-app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
-  const { orderId } = req.params;
-  if (!orderId) {
-    return res.status(400).json({ ok: false, message: "orderId is required." });
-  }
-
-  const gid = orderId.startsWith("gid://")
-    ? orderId
-    : `gid://shopify/Order/${orderId}`;
-
-  try {
-    const query = `
-      query OrderFees($id: ID!) {
-        order(id: $id) {
-          id
-          name
-          createdAt
-          displayFinancialStatus
-          totalPriceSet { shopMoney { amount currencyCode } }
-          transactions {
-            id
-            kind
-            status
-            amountSet { shopMoney { amount currencyCode } }
-            fees {
-              amount { amount currencyCode }
-              type
-              flatFeeName
-              rateName
-            }
-          }
-        }
-      }
-    `;
-
-    const data = await shopifyAdminGraphql(query, { id: gid });
-
-    if (!data.order) {
-      return res
-        .status(404)
-        .json({ ok: false, message: `Order ${orderId} not found.` });
-    }
-
-    return res.json({ ok: true, order: summarizeOrderFees(data.order) });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      message: error?.message || "Failed to fetch order fees.",
-    });
-  }
-});
-
+// ── GET /api/shopify/orders/fees (bulk) ──────────────────────────────────────
+// Registered BEFORE /:orderId/fees so Express doesn't swallow "fees" as a param.
 app.get("/api/shopify/orders/fees", async (req, res) => {
   try {
     const limit = Number(req.query.limit) || Infinity;
@@ -3858,7 +3848,18 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
       after = pageInfo.endCursor;
     }
 
-    const rows = orders.map(summarizeOrderFees);
+    // For orders where GraphQL returned no fees, fall back to REST in parallel
+    const rows = await Promise.all(
+      orders.map(async (order) => {
+        const graphqlRow = summarizeOrderFees(order);
+        if (graphqlRow.totalFees === 0) {
+          const numericId = order.id.split("/").pop();
+          const restFee = await fetchRestBalanceFee(numericId, order.createdAt);
+          if (restFee) return summarizeOrderFees(order, restFee);
+        }
+        return graphqlRow;
+      }),
+    );
     const summary = {
       orderCount: rows.length,
       totalSales: Number(
@@ -3915,6 +3916,69 @@ app.get("/api/shopify/orders/fees", async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: error?.message || "Failed to fetch orders and fees.",
+    });
+  }
+});
+
+// ── GET /api/shopify/orders/:orderId/fees ────────────────────────────────────
+// Returns the transaction fee breakdown for a single order.
+// orderId can be a numeric ID or full GID (gid://shopify/Order/123).
+app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
+  const { orderId } = req.params;
+
+  const gid = orderId.startsWith("gid://")
+    ? orderId
+    : `gid://shopify/Order/${orderId}`;
+
+  try {
+    const query = `
+      query OrderFees($id: ID!) {
+        order(id: $id) {
+          id
+          name
+          createdAt
+          displayFinancialStatus
+          totalPriceSet { shopMoney { amount currencyCode } }
+          transactions {
+            id
+            kind
+            status
+            amountSet { shopMoney { amount currencyCode } }
+            fees {
+              amount { amount currencyCode }
+              type
+              flatFeeName
+              rateName
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(query, { id: gid });
+
+    if (!data.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${orderId} not found.` });
+    }
+
+    const graphqlRow = summarizeOrderFees(data.order);
+
+    // If GraphQL returned no fees, fall back to Shopify Payments REST API
+    if (graphqlRow.totalFees === 0) {
+      const numericId = data.order.id.split("/").pop();
+      const restFee = await fetchRestBalanceFee(numericId, data.order.createdAt);
+      if (restFee) {
+        return res.json({ ok: true, order: summarizeOrderFees(data.order, restFee) });
+      }
+    }
+
+    return res.json({ ok: true, order: graphqlRow });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to fetch order fees.",
     });
   }
 });
