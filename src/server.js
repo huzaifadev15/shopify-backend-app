@@ -3343,39 +3343,7 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
 
     const backendData = await response.json();
 
-    const sizeGroups = {};
-    backendData.forEach((item) => {
-      if (item.pricingTables) {
-        item.pricingTables.forEach((pricing) => {
-          const sizeKey = `${pricing.size}"`;
-          if (!sizeGroups[sizeKey]) {
-            sizeGroups[sizeKey] = {
-              size: sizeKey,
-              qty10: "0",
-              qty20: "0",
-              qty25: "0",
-              qty50: "0",
-              qty75: "0",
-              qty100: "0",
-              qty200: "0",
-              qty250: "0",
-              qty300: "0",
-              qty500: "0",
-              qty700: "0",
-              qty750: "0",
-              qty1000: "0",
-              qty1500: "0",
-              qty2000: "0",
-              qty5000: "0",
-              qty10000: "0",
-            };
-          }
-          sizeGroups[sizeKey][`qty${pricing.quantity}`] = pricing.price;
-        });
-      }
-    });
-
-    return res.json(Object.values(sizeGroups));
+    return res.json(backendData);
   } catch (error) {
     return res.status(500).json({ error: "Internal server error" });
   }
