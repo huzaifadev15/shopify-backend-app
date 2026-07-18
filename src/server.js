@@ -3326,15 +3326,15 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
   }
 
   try {
-    const API_BASE_URL =
-      "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
-    const response = await fetch(
-      `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`,
-    );
-    // const API_BASE_URL = "https://neonsigns.us.com/api/pricing";
+    // const API_BASE_URL =
+    //   "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
     // const response = await fetch(
-    //   `${API_BASE_URL}/by-page-title?title=${encodeURIComponent(title)}`,
+    //   `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`,
     // );
+    const API_BASE_URL = "https://neonsigns.us.com/api/pricing";
+    const response = await fetch(
+      `${API_BASE_URL}/by-page-title?title=${encodeURIComponent(title)}`,
+    );
     if (!response.ok) {
       return res
         .status(response.status)
