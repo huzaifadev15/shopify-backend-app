@@ -2139,50 +2139,54 @@ app.get("/api/dashboardimage-upload", (_req, res) => {
   res.json({ message: "Dashboard image upload proxy endpoint" });
 });
 
-app.post("/api/dashboardimage-upload", upload.single("file"), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({
-      success: false,
-      error: "No file uploaded. Send a multipart field named 'file'.",
-    });
-  }
-
-  try {
-    const form = new FormData();
-
-    for (const [key, value] of Object.entries(req.body || {})) {
-      if (Array.isArray(value)) {
-        value.forEach((item) => form.append(key, item));
-      } else if (value !== undefined && value !== null) {
-        form.append(key, value);
-      }
+app.post(
+  "/api/dashboardimage-upload",
+  upload.single("file"),
+  async (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: "No file uploaded. Send a multipart field named 'file'.",
+      });
     }
 
-    form.append(
-      "file",
-      new Blob([req.file.buffer], { type: req.file.mimetype }),
-      req.file.originalname,
-    );
+    try {
+      const form = new FormData();
 
-    const erpResponse = await fetch(ERP_DASHBOARD_IMAGE_UPLOAD_URL, {
-      method: "POST",
-      body: form,
-    });
+      for (const [key, value] of Object.entries(req.body || {})) {
+        if (Array.isArray(value)) {
+          value.forEach((item) => form.append(key, item));
+        } else if (value !== undefined && value !== null) {
+          form.append(key, value);
+        }
+      }
 
-    const contentType = erpResponse.headers.get("content-type") || "";
-    const body = await erpResponse.text();
+      form.append(
+        "file",
+        new Blob([req.file.buffer], { type: req.file.mimetype }),
+        req.file.originalname,
+      );
 
-    res.status(erpResponse.status);
-    if (contentType) res.type(contentType);
-    return res.send(body);
-  } catch (error) {
-    console.error("[DASHBOARD_IMAGE_UPLOAD] Proxy error:", error);
-    return res.status(502).json({
-      success: false,
-      error: error?.message || "Failed to proxy dashboard image upload",
-    });
-  }
-});
+      const erpResponse = await fetch(ERP_DASHBOARD_IMAGE_UPLOAD_URL, {
+        method: "POST",
+        body: form,
+      });
+
+      const contentType = erpResponse.headers.get("content-type") || "";
+      const body = await erpResponse.text();
+
+      res.status(erpResponse.status);
+      if (contentType) res.type(contentType);
+      return res.send(body);
+    } catch (error) {
+      console.error("[DASHBOARD_IMAGE_UPLOAD] Proxy error:", error);
+      return res.status(502).json({
+        success: false,
+        error: error?.message || "Failed to proxy dashboard image upload",
+      });
+    }
+  },
+);
 // Uploads raw bytes to Shopify's own Files storage (stagedUploadsCreate → PUT
 // → fileCreate) and returns the resulting cdn.shopify.com URL. Unlike a
 // remote URL passed straight into productCreate's media field, this gives
@@ -3322,15 +3326,15 @@ app.get("/api/pricing/by-page-title", async (req, res) => {
   }
 
   try {
-    const API_BASE_URL =
-      "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
-    const response = await fetch(
-      `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`,
-    );
-    // const API_BASE_URL = "https://neonsigns.us.com/api/pricing";
+    // const API_BASE_URL =
+    //   "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d";
     // const response = await fetch(
-    //   `${API_BASE_URL}/by-page-title?title=${encodeURIComponent(title)}`,
+    //   `${API_BASE_URL}/pricing/by-page-title?title=${encodeURIComponent(title)}`,
     // );
+    const API_BASE_URL = "https://neonsigns.us.com/api/pricing";
+    const response = await fetch(
+      `${API_BASE_URL}/by-page-title?title=${encodeURIComponent(title)}`,
+    );
     if (!response.ok) {
       return res
         .status(response.status)
@@ -3781,7 +3785,9 @@ async function fetchRestBalanceFee(numericOrderId, orderDate) {
     const match = transactions.find(
       (t) => String(t.source_order_id) === String(numericOrderId),
     );
-    return match ? { fee: parseFloat(match.fee), net: parseFloat(match.net) } : null;
+    return match
+      ? { fee: parseFloat(match.fee), net: parseFloat(match.net) }
+      : null;
   } catch {
     return null;
   }
@@ -3805,7 +3811,8 @@ function summarizeOrderFees(order, restFee = null) {
   }
 
   // Fall back to REST balance transaction fee when GraphQL returns nothing
-  const feeSource = totalFees === 0 && restFee ? "shopify_payments_rest" : "graphql";
+  const feeSource =
+    totalFees === 0 && restFee ? "shopify_payments_rest" : "graphql";
   if (totalFees === 0 && restFee) {
     totalFees = restFee.fee;
   }
@@ -3968,9 +3975,15 @@ app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
     // If GraphQL returned no fees, fall back to Shopify Payments REST API
     if (graphqlRow.totalFees === 0) {
       const numericId = data.order.id.split("/").pop();
-      const restFee = await fetchRestBalanceFee(numericId, data.order.createdAt);
+      const restFee = await fetchRestBalanceFee(
+        numericId,
+        data.order.createdAt,
+      );
       if (restFee) {
-        return res.json({ ok: true, order: summarizeOrderFees(data.order, restFee) });
+        return res.json({
+          ok: true,
+          order: summarizeOrderFees(data.order, restFee),
+        });
       }
     }
 
