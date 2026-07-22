@@ -4056,7 +4056,7 @@ app.get("/api/shopify/products/images", async (req, res) => {
             id
             featuredImage { url }
             variants(first: 1) {
-              nodes { id; image { url } }
+              nodes { id image { url } }
             }
           }
         }
