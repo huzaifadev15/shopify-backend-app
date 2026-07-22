@@ -4027,6 +4027,68 @@ app.use((error, _req, res, next) => {
   return next(error);
 });
 
+// ── GET /api/shopify/products/images ─────────────────────────────────────────
+// Fetch featured images for a list of numeric Shopify product IDs.
+// Query param: productIds=123,456,789
+// Returns: { images: { "123": "https://cdn...", "456": null, ... } }
+app.get("/api/shopify/products/images", async (req, res) => {
+  try {
+    const raw = String(req.query.productIds || "").trim();
+    if (!raw) {
+      return res.status(400).json({ ok: false, message: "productIds query param is required." });
+    }
+
+    const numericIds = raw
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => /^\d+$/.test(id));
+
+    if (numericIds.length === 0) {
+      return res.status(400).json({ ok: false, message: "No valid numeric product IDs provided." });
+    }
+
+    const gids = numericIds.map((id) => `gid://shopify/Product/${id}`);
+
+    const query = `
+      query GetProductImages($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Product {
+            id
+            featuredImage { url }
+            variants(first: 1) {
+              nodes { id; image { url } }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(query, { ids: gids });
+    const nodes = data?.nodes || [];
+
+    const images = {};
+    for (const node of nodes) {
+      if (!node?.id) continue;
+      const numericId = node.id.split("/").pop();
+      const url =
+        node.featuredImage?.url ||
+        node.variants?.nodes?.[0]?.image?.url ||
+        null;
+      images[numericId] = url;
+    }
+
+    // Fill nulls for any IDs that weren't returned
+    for (const id of numericIds) {
+      if (!(id in images)) images[id] = null;
+    }
+
+    return res.json({ ok: true, images });
+  } catch (error) {
+    console.error("[PRODUCT_IMAGES]", error?.message);
+    return res.status(500).json({ ok: false, message: error?.message || "Failed to fetch product images." });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Quote API running on http://localhost:${PORT}`);
 });
