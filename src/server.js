@@ -3028,161 +3028,197 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
 });
 
 // ── POST /api/shopify/draft-orders/manual ────────────────────────────────────
-// Creates a DRAFT product from manual order fields, then creates a draft order.
-// Body: { shipping, quantity, backing, broder, border, productImage, price?, email?, customerName? }
+// Creates DRAFT products from manual order fields, then creates a single draft order.
+// Supports both single-item (legacy flat fields) and multi-item (lineItems array) bodies.
+// Single-item body: { shipping, quantity, backing, border, productImage, price, email, customerName, size, patchType }
+// Multi-item body:  { shipping, email, customerName, lineItems: [{ quantity, price, size, patchType, backing, border, productImage }] }
 app.post("/api/shopify/draft-orders/manual", async (req, res) => {
   const {
     shipping,
-    quantity,
-    backing,
-    broder,
-    border,
-    productImage,
-    price,
     email,
     customerName,
-    size,
-    productTitle: customProductTitle,
-    patchType,
+    lineItems: rawLineItems,
+    // legacy single-item fields
+    quantity: singleQty,
+    backing: singleBacking,
+    broder: singleBroder,
+    border: singleBorder,
+    productImage: singleProductImage,
+    price: singlePrice,
+    size: singleSize,
+    productTitle: singleProductTitle,
+    patchType: singlePatchType,
   } = req.body || {};
 
-  const qty = parseInt(quantity, 10);
-  if (!qty || qty < 1) {
-    return res
-      .status(400)
-      .json({ ok: false, message: "quantity must be a positive integer." });
+  const items =
+    Array.isArray(rawLineItems) && rawLineItems.length > 0
+      ? rawLineItems
+      : [
+          {
+            quantity: singleQty,
+            backing: singleBacking,
+            broder: singleBroder,
+            border: singleBorder,
+            productImage: singleProductImage,
+            price: singlePrice,
+            size: singleSize,
+            productTitle: singleProductTitle,
+            patchType: singlePatchType,
+          },
+        ];
+
+  for (const item of items) {
+    const qty = parseInt(item.quantity, 10);
+    if (!qty || qty < 1) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Each item must have a positive quantity." });
+    }
   }
 
+  const createdProductIds = [];
+
   try {
-    // ── Step 1: build product title + description ─────────────────────────────
-    const borderValue = border || broder || "";
-    const productTitle =
-      customProductTitle ||
-      [
-        "Manual Order",
-        `Qty: ${qty}`,
+    const builtLineItems = [];
+
+    for (const item of items) {
+      const {
+        quantity,
+        backing,
+        broder,
+        border,
+        productImage,
+        price,
+        size,
+        productTitle: customProductTitle,
+        patchType,
+      } = item;
+
+      const qty = parseInt(quantity, 10);
+      const borderValue = border || broder || "";
+      const productTitle =
+        customProductTitle ||
+        [
+          "Manual Order",
+          `Qty: ${qty}`,
+          backing ? `Backing: ${backing}` : null,
+          borderValue ? `Border: ${borderValue}` : null,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+
+      const descriptionLines = [
+        `Quantity: ${qty}`,
+        patchType ? `Patch Type: ${patchType}` : null,
+        size ? `Size: ${size}` : null,
         backing ? `Backing: ${backing}` : null,
         borderValue ? `Border: ${borderValue}` : null,
       ]
         .filter(Boolean)
-        .join(" | ");
+        .join("\n");
 
-    const descriptionLines = [
-      `Quantity: ${qty}`,
-      patchType ? `Patch Type: ${patchType}` : null,
-      size ? `Size: ${size}` : null,
-      backing ? `Backing: ${backing}` : null,
-      borderValue ? `Border: ${borderValue}` : null,
-      shipping ? `Shipping: ${shipping}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n");
+      const resolvedImageUrl = productImage
+        ? productImage.startsWith("http")
+          ? productImage
+          : `https://${SHOP_DOMAIN}${productImage.startsWith("/") ? "" : "/"}${productImage}`
+        : null;
 
-    // ── Step 2: resolve image ─────────────────────────────────────────────────
-    const resolvedImageUrl = productImage
-      ? productImage.startsWith("http")
-        ? productImage
-        : `https://${SHOP_DOMAIN}${productImage.startsWith("/") ? "" : "/"}${productImage}`
-      : null;
+      const mediaInput = resolvedImageUrl
+        ? [{ originalSource: resolvedImageUrl, alt: productTitle, mediaContentType: "IMAGE" }]
+        : [];
 
-    const mediaInput = resolvedImageUrl
-      ? [
-          {
-            originalSource: resolvedImageUrl,
-            alt: productTitle,
-            mediaContentType: "IMAGE",
-          },
-        ]
-      : [];
-
-    // ── Step 3: create DRAFT product ─────────────────────────────────────────
-    const productData = await shopifyAdminGraphql(
-      `
-      mutation CreateManualProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
-        productCreate(product: $product, media: $media) {
-          product {
-            id
-            variants(first: 1) { nodes { id } }
+      const productData = await shopifyAdminGraphql(
+        `
+        mutation CreateManualProduct($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
+          productCreate(product: $product, media: $media) {
+            product {
+              id
+              variants(first: 1) { nodes { id } }
+            }
+            userErrors { field message }
           }
-          userErrors { field message }
         }
-      }
-    `,
-      {
-        product: {
-          title: productTitle,
-          descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
-          status: "DRAFT",
-          tags: [
-            "manual-order",
-            `qty-${qty}`,
-            ...(size ? [`size-${size}`] : []),
-          ],
-          metafields: [
-            {
-              namespace: "custom",
-              key: "seo_robots",
-              value: "noindex, nofollow",
-              type: "single_line_text_field",
-            },
-          ],
+      `,
+        {
+          product: {
+            title: productTitle,
+            descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
+            status: "DRAFT",
+            tags: ["manual-order", `qty-${qty}`, ...(size ? [`size-${size}`] : [])],
+            metafields: [
+              {
+                namespace: "custom",
+                key: "seo_robots",
+                value: "noindex, nofollow",
+                type: "single_line_text_field",
+              },
+            ],
+          },
+          media: mediaInput,
         },
-        media: mediaInput,
-      },
-    );
+      );
 
-    const productErrors = productData?.productCreate?.userErrors || [];
-    if (productErrors.length) {
-      return res.status(400).json({
-        ok: false,
-        message: productErrors[0]?.message || "Failed to create product.",
-        userErrors: productErrors,
-      });
-    }
-
-    const createdProduct = productData?.productCreate?.product;
-    const createdVariant = createdProduct?.variants?.nodes?.[0];
-    if (!createdVariant?.id) {
-      return res.status(502).json({
-        ok: false,
-        message: "Product created but variant ID not returned.",
-      });
-    }
-
-    // ── Step 4: set variant price (use provided price or default to 0.00) ─────
-    const unitPrice = parseFloat(price) || 0;
-    const variantData = await shopifyAdminGraphql(
-      `
-      mutation SetVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-        productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-          productVariants { id price }
-          userErrors { field message }
-        }
+      const productErrors = productData?.productCreate?.userErrors || [];
+      if (productErrors.length) {
+        return res.status(400).json({
+          ok: false,
+          message: productErrors[0]?.message || "Failed to create product.",
+          userErrors: productErrors,
+        });
       }
-    `,
-      {
-        productId: createdProduct.id,
-        variants: [{ id: createdVariant.id, price: unitPrice.toFixed(2) }],
-      },
-    );
 
-    const variantErrors =
-      variantData?.productVariantsBulkUpdate?.userErrors || [];
-    if (variantErrors.length) {
-      return res.status(400).json({
-        ok: false,
-        message: variantErrors[0]?.message || "Failed to set variant price.",
-        userErrors: variantErrors,
+      const createdProduct = productData?.productCreate?.product;
+      const createdVariant = createdProduct?.variants?.nodes?.[0];
+      if (!createdVariant?.id) {
+        return res.status(502).json({ ok: false, message: "Product created but variant ID not returned." });
+      }
+
+      createdProductIds.push(createdProduct.id);
+
+      const unitPrice = parseFloat(price) || 0;
+      const variantData = await shopifyAdminGraphql(
+        `
+        mutation SetVariantPrice($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+          productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+            productVariants { id price }
+            userErrors { field message }
+          }
+        }
+      `,
+        {
+          productId: createdProduct.id,
+          variants: [{ id: createdVariant.id, price: unitPrice.toFixed(2) }],
+        },
+      );
+
+      const variantErrors = variantData?.productVariantsBulkUpdate?.userErrors || [];
+      if (variantErrors.length) {
+        return res.status(400).json({
+          ok: false,
+          message: variantErrors[0]?.message || "Failed to set variant price.",
+          userErrors: variantErrors,
+        });
+      }
+
+      builtLineItems.push({
+        variantId: createdVariant.id,
+        qty,
+        productTitle,
+        customAttributes: [
+          { key: "Quantity", value: String(qty) },
+          patchType ? { key: "Patch Type", value: patchType } : null,
+          size ? { key: "Size", value: String(size) } : null,
+          backing ? { key: "Backing", value: backing } : null,
+          borderValue ? { key: "Border", value: borderValue } : null,
+        ].filter(Boolean),
       });
     }
 
-    // ── Step 5: build shipping line ───────────────────────────────────────────
     const shippingLine = {
       title: "Shipping",
       price: shipping != null ? String(shipping) : "0.00",
     };
 
-    // ── Step 6: create draft order ────────────────────────────────────────────
     const draftData = await shopifyAdminGraphql(
       `
       mutation draftOrderCreate($input: DraftOrderInput!) {
@@ -3200,21 +3236,13 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     `,
       {
         input: {
-          lineItems: [
-            {
-              variantId: createdVariant.id,
-              quantity: qty,
-              customAttributes: [
-                { key: "Quantity", value: String(qty) },
-                patchType ? { key: "Patch Type", value: patchType } : null,
-                size ? { key: "Size", value: String(size) } : null,
-                backing ? { key: "Backing", value: backing } : null,
-                borderValue ? { key: "Border", value: borderValue } : null,
-              ].filter(Boolean),
-            },
-          ],
+          lineItems: builtLineItems.map((i) => ({
+            variantId: i.variantId,
+            quantity: i.qty,
+            customAttributes: i.customAttributes,
+          })),
           shippingLine,
-          note: productTitle,
+          note: builtLineItems.map((i) => i.productTitle).join(" + "),
           tags: ["manual-order"],
           ...(email && { email }),
           ...(customerName && {
@@ -3227,6 +3255,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
     const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
     if (draftErrors.length) {
+      await cleanupCheckoutProducts(createdProductIds).catch(() => {});
       return res.status(400).json({
         ok: false,
         message: draftErrors[0]?.message || "Failed to create draft order.",
@@ -3237,7 +3266,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     const draftOrder = draftData?.draftOrderCreate?.draftOrder;
     return res.json({
       ok: true,
-      productId: createdProduct.id,
+      productId: createdProductIds[0],
       draftOrder: {
         id: draftOrder?.id,
         name: draftOrder?.name,
@@ -3247,6 +3276,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
       },
     });
   } catch (error) {
+    await cleanupCheckoutProducts(createdProductIds).catch(() => {});
     console.error("[MANUAL_DRAFT_ORDER]", error?.message);
     return res.status(500).json({
       ok: false,
