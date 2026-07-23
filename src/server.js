@@ -2729,6 +2729,110 @@ app.post("/api/shopify/checkout", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/checkout/shoppay ───────────────────────────────────────
+// Same as /api/shopify/checkout but returns an invoiceUrl that redirects
+// directly into the ShopPay payment screen instead of the standard checkout page.
+app.post("/api/shopify/checkout/shoppay", async (req, res) => {
+  const body = req.body || {};
+  const rawItems =
+    Array.isArray(body.lineItems) && body.lineItems.length > 0
+      ? body.lineItems
+      : [body];
+
+  const createdProductIds = [];
+
+  try {
+    const builtItems = [];
+    for (const rawItem of rawItems) {
+      const item = await createCheckoutProductForItem(rawItem);
+      createdProductIds.push(item.productId);
+      builtItems.push(item);
+    }
+
+    const totalQty = builtItems.reduce((sum, i) => sum + i.qty, 0);
+
+    const draftData = await shopifyAdminGraphql(
+      `
+      mutation draftOrderCreate($input: DraftOrderInput!) {
+        draftOrderCreate(input: $input) {
+          draftOrder {
+            id
+            name
+            totalPrice
+            invoiceUrl
+          }
+          userErrors { field message }
+        }
+      }
+    `,
+      {
+        input: {
+          lineItems: builtItems.map((i) => ({
+            variantId: i.variantId,
+            quantity: i.qty,
+            customAttributes: i.customAttributes,
+          })),
+          shippingLine:
+            totalQty < 100
+              ? { title: "Standard Shipping", price: "30.00" }
+              : { title: "Free Shipping", price: "0.00" },
+          note: builtItems.map((i) => i.productTitle).join(" + "),
+          tags: ["custom-patch-checkout", "shoppay"],
+        },
+      },
+    );
+
+    const draftErrors = draftData?.draftOrderCreate?.userErrors || [];
+    if (draftErrors.length) {
+      await cleanupCheckoutProducts(createdProductIds);
+      return res.status(400).json({
+        ok: false,
+        message: draftErrors[0]?.message || "Failed to create draft order.",
+        userErrors: draftErrors,
+      });
+    }
+
+    const draftOrder = draftData?.draftOrderCreate?.draftOrder;
+    if (!draftOrder?.invoiceUrl) {
+      await cleanupCheckoutProducts(createdProductIds);
+      return res.status(502).json({
+        ok: false,
+        message: "Draft order created but invoiceUrl not returned.",
+        draftOrder,
+      });
+    }
+
+    // Return invoiceUrl with ?payment=shop_pay — no skip_shop_pay param
+    const rawUrl = draftOrder.invoiceUrl;
+    const sep = rawUrl.includes("?") ? "&" : "?";
+    const shopPayUrl = `${rawUrl}${sep}payment=shop_pay`;
+
+    return res.json({
+      ok: true,
+      invoiceUrl: shopPayUrl,
+      draftOrder: {
+        id: draftOrder.id,
+        name: draftOrder.name,
+        totalPrice: draftOrder.totalPrice,
+      },
+      quotes: builtItems.map((i) => ({
+        unitPrice: i.unitPrice,
+        total: i.total,
+        qty: i.qty,
+        quoteToken: i.quoteToken,
+      })),
+    });
+  } catch (error) {
+    if (error?.createdProductId) createdProductIds.push(error.createdProductId);
+    await cleanupCheckoutProducts(createdProductIds);
+    return res.status(error?.statusCode || 500).json({
+      ok: false,
+      message: error?.message || "Failed to create ShopPay checkout.",
+      ...(error?.userErrors ? { userErrors: error.userErrors } : {}),
+    });
+  }
+});
+
 // ── PUT /api/shopify/draft-orders/:draftOrderId ──────────────────────────────
 // Updates an existing Shopify draft order via the GraphQL draftOrderUpdate mutation.
 // draftOrderId can be a numeric ID or full GID. Body: { input: DraftOrderInput }
