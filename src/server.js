@@ -185,6 +185,26 @@ function getRequesterKey(req) {
   );
 }
 
+/**
+ * The end customer's IP for storefront submissions. The theme calls this API
+ * straight from the shopper's browser, so the proxy headers hold their real
+ * address — we forward it on to the dashboard, which otherwise would only see
+ * this server's IP. x-forwarded-for is "client, proxy1, …": the first entry
+ * is the client.
+ */
+function getClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  const chain = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+  const candidate =
+    (typeof chain === "string" && chain.split(",")[0]) ||
+    req.headers["x-real-ip"] ||
+    req.headers["cf-connecting-ip"] ||
+    req.socket?.remoteAddress ||
+    "";
+  const ip = String(candidate).trim().replace(/^::ffff:/i, "");
+  return ip ? ip.slice(0, 45) : null;
+}
+
 function enforceAiRateLimit(req, res) {
   const ip =
     req.ip ||
@@ -3099,6 +3119,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       shopifyOrderId: draftOrder?.id,
       invoiceUrl: draftOrder?.invoiceUrl,
       storeType: "shopify",
+      customerIp: getClientIp(req),
     };
     // Forward to both stores
     await Promise.all([
@@ -4094,6 +4115,458 @@ app.get("/api/shopify/orders/:orderId/fees", async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: error?.message || "Failed to fetch order fees.",
+    });
+  }
+});
+
+// ── Refunds ──────────────────────────────────────────────────────────────────
+// The REST refund endpoints are legacy, so these routes accept the classic
+// REST-shaped `refund` body (refund_line_items, refund_shipping_lines,
+// refund_duties, transactions, restock, note) and translate it to the GraphQL
+// refundCreate mutation. camelCase keys are accepted as well.
+
+const REFUND_RESTOCK_TYPES = new Set([
+  "NO_RESTOCK",
+  "CANCEL",
+  "RETURN",
+  "LEGACY_RESTOCK",
+]);
+const REFUND_DUTY_TYPES = new Set(["FULL", "PROPORTIONAL"]);
+
+function toGid(type, value) {
+  const str = String(value ?? "").trim();
+  if (!str) return null;
+  if (str.startsWith("gid://")) return str;
+  return `gid://shopify/${type}/${str.split("/").pop()}`;
+}
+
+// REST sends restock_type as "return"/"no_restock"/…; the top-level `restock`
+// flag is the fallback for line items that don't specify one.
+function normalizeRestockType(value, restockFallback) {
+  if (value == null || value === "") {
+    return restockFallback ? "RETURN" : "NO_RESTOCK";
+  }
+  const upper = String(value).toUpperCase();
+  return REFUND_RESTOCK_TYPES.has(upper) ? upper : "NO_RESTOCK";
+}
+
+function buildRefundLineItems(body) {
+  const raw = body.refund_line_items || body.refundLineItems || [];
+  if (!Array.isArray(raw)) return [];
+  const restockFallback = body.restock === true;
+
+  return raw
+    .map((item) => {
+      const lineItemId = toGid(
+        "LineItem",
+        item.line_item_id ?? item.lineItemId ?? item.line_item?.id,
+      );
+      if (!lineItemId) return null;
+
+      const quantity = Number(item.quantity);
+      const entry = {
+        lineItemId,
+        quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 1,
+        restockType: normalizeRestockType(
+          item.restock_type ?? item.restockType,
+          restockFallback,
+        ),
+      };
+
+      const locationId = toGid(
+        "Location",
+        item.location_id ?? item.locationId,
+      );
+      // Shopify rejects a locationId unless the line is actually restocked.
+      if (locationId && entry.restockType !== "NO_RESTOCK") {
+        entry.locationId = locationId;
+      }
+      return entry;
+    })
+    .filter(Boolean);
+}
+
+function buildRefundDuties(body) {
+  const raw = body.refund_duties || body.refundDuties || [];
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((duty) => {
+      const dutyId = toGid("Duty", duty.duty_id ?? duty.dutyId);
+      if (!dutyId) return null;
+      const type = String(
+        duty.refund_type ?? duty.refundType ?? "FULL",
+      ).toUpperCase();
+      return {
+        dutyId,
+        refundType: REFUND_DUTY_TYPES.has(type) ? type : "FULL",
+      };
+    })
+    .filter(Boolean);
+}
+
+// GraphQL takes a single shipping amount (or fullRefund), whereas REST sends a
+// refund_shipping_lines array — sum it when no explicit amount is given.
+function buildShippingRefund(body) {
+  const shipping = body.shipping || {};
+  if (shipping.full_refund === true || shipping.fullRefund === true) {
+    return { fullRefund: true };
+  }
+
+  const explicit = shipping.amount ?? body.shipping_amount ?? null;
+  if (explicit != null && explicit !== "") {
+    const amount = Number(explicit);
+    if (Number.isFinite(amount)) return { amount: amount.toFixed(2) };
+  }
+
+  const lines = body.refund_shipping_lines || body.refundShippingLines || [];
+  if (!Array.isArray(lines) || lines.length === 0) return null;
+
+  const total = lines.reduce((sum, line) => {
+    const set = line.subtotal_amount_set || line.subtotalAmountSet || {};
+    const money = set.presentment_money || set.presentmentMoney || {};
+    const value = Number(money.amount ?? line.subtotal_amount ?? 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+
+  return total > 0 ? { amount: total.toFixed(2) } : null;
+}
+
+const SUGGESTED_REFUND_QUERY = `
+  query SuggestedRefund(
+    $id: ID!
+    $refundLineItems: [RefundLineItemInput!]
+    $refundDuties: [RefundDutyInput!]
+    $refundShipping: Boolean
+    $shippingAmount: Money
+  ) {
+    order(id: $id) {
+      id
+      name
+      currencyCode
+      suggestedRefund(
+        refundLineItems: $refundLineItems
+        refundDuties: $refundDuties
+        refundShipping: $refundShipping
+        shippingAmount: $shippingAmount
+      ) {
+        amountSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        maximumRefundableSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        subtotalSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        totalTaxSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        totalDutiesSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        shipping {
+          amountSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          maximumRefundableSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          taxSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        }
+        refundLineItems {
+          quantity
+          restockType
+          lineItem { id name }
+          subtotalSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          totalTaxSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+        }
+        suggestedTransactions {
+          gateway
+          accountNumber
+          amountSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          maximumRefundableSet { presentmentMoney { amount currencyCode } }
+          parentTransaction { id }
+        }
+      }
+    }
+  }
+`;
+
+const REFUND_FIELDS = `
+  id
+  createdAt
+  note
+  totalRefundedSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+  refundLineItems(first: 100) {
+    nodes {
+      quantity
+      restockType
+      lineItem { id name }
+      subtotalSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+      totalTaxSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+    }
+  }
+  transactions(first: 50) {
+    nodes {
+      id
+      kind
+      status
+      gateway
+      amountSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+    }
+  }
+`;
+
+// Resolves the transactions to refund against. When the caller supplies none we
+// fall back to Shopify's suggested transactions so the money actually moves.
+function buildRefundTransactions(body, orderGid, suggested) {
+  const raw = body.transactions || [];
+  if (Array.isArray(raw) && raw.length > 0) {
+    return raw
+      .map((tx) => {
+        const amount = Number(tx.amount);
+        if (!Number.isFinite(amount) || amount <= 0) return null;
+        const entry = {
+          orderId: orderGid,
+          gateway: String(tx.gateway || "").trim(),
+          kind: "REFUND",
+          amount: amount.toFixed(2),
+        };
+        const parentId = toGid(
+          "OrderTransaction",
+          tx.parent_id ?? tx.parentId ?? tx.parent_transaction_id,
+        );
+        if (parentId) entry.parentId = parentId;
+        return entry.gateway ? entry : null;
+      })
+      .filter(Boolean);
+  }
+
+  const suggestedTransactions = suggested?.suggestedTransactions || [];
+  return suggestedTransactions
+    .map((tx) => {
+      const amount = Number(tx.amountSet?.presentmentMoney?.amount ?? 0);
+      if (!Number.isFinite(amount) || amount <= 0) return null;
+      const entry = {
+        orderId: orderGid,
+        gateway: tx.gateway,
+        kind: "REFUND",
+        amount: amount.toFixed(2),
+      };
+      if (tx.parentTransaction?.id) entry.parentId = tx.parentTransaction.id;
+      return entry;
+    })
+    .filter(Boolean);
+}
+
+// ── POST /api/shopify/orders/:orderId/refunds/calculate ──────────────────────
+// Dry run: returns Shopify's suggested refund (amounts, taxes, shipping and the
+// transactions it would use) without creating anything.
+app.post("/api/shopify/orders/:orderId/refunds/calculate", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  try {
+    const body = req.body || {};
+    const shipping = buildShippingRefund(body);
+    const data = await shopifyAdminGraphql(SUGGESTED_REFUND_QUERY, {
+      id: orderGid,
+      refundLineItems: buildRefundLineItems(body),
+      refundDuties: buildRefundDuties(body),
+      refundShipping: shipping?.fullRefund === true ? true : null,
+      shippingAmount: shipping?.amount ?? null,
+    });
+
+    if (!data.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${req.params.orderId} not found.` });
+    }
+
+    return res.json({
+      ok: true,
+      order: {
+        id: data.order.id,
+        name: data.order.name,
+        currency: data.order.currencyCode,
+      },
+      suggestedRefund: data.order.suggestedRefund,
+    });
+  } catch (error) {
+    console.error("[REFUND_CALCULATE]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to calculate refund.",
+    });
+  }
+});
+
+// ── POST /api/shopify/orders/:orderId/refunds ────────────────────────────────
+// Creates a refund. Accepts the REST refund body shape; `transactions` is
+// optional — omit it to refund the suggested amount to the original payment.
+app.post("/api/shopify/orders/:orderId/refunds", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  const body = req.body || {};
+  const refundLineItems = buildRefundLineItems(body);
+  const refundDuties = buildRefundDuties(body);
+  const shipping = buildShippingRefund(body);
+  const hasTransactions =
+    Array.isArray(body.transactions) && body.transactions.length > 0;
+
+  if (
+    refundLineItems.length === 0 &&
+    refundDuties.length === 0 &&
+    !shipping &&
+    !hasTransactions
+  ) {
+    return res.status(400).json({
+      ok: false,
+      message:
+        "Nothing to refund. Provide refund_line_items, refund_shipping_lines/shipping, refund_duties or transactions.",
+    });
+  }
+
+  try {
+    // Always ask Shopify what it suggests: it gives us the parent transactions
+    // when the caller didn't supply any, and lets us reject over-refunds early.
+    const suggestedData = await shopifyAdminGraphql(SUGGESTED_REFUND_QUERY, {
+      id: orderGid,
+      refundLineItems,
+      refundDuties,
+      refundShipping: shipping?.fullRefund === true ? true : null,
+      shippingAmount: shipping?.amount ?? null,
+    });
+
+    if (!suggestedData.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${req.params.orderId} not found.` });
+    }
+
+    const suggested = suggestedData.order.suggestedRefund;
+    const transactions = buildRefundTransactions(body, orderGid, suggested);
+
+    if (transactions.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "No refundable transactions found for this order. Pass `transactions` explicitly if the order was paid outside Shopify.",
+      });
+    }
+
+    const maximumRefundable = Number(
+      suggested?.maximumRefundableSet?.presentmentMoney?.amount ?? 0,
+    );
+    const requested = transactions.reduce(
+      (sum, tx) => sum + Number(tx.amount),
+      0,
+    );
+    if (maximumRefundable > 0 && requested > maximumRefundable + 0.001) {
+      return res.status(400).json({
+        ok: false,
+        message: `Requested refund ${requested.toFixed(2)} exceeds the maximum refundable ${maximumRefundable.toFixed(2)}.`,
+      });
+    }
+
+    const input = {
+      orderId: orderGid,
+      transactions,
+      notify: body.notify === true,
+    };
+    if (body.note) input.note = String(body.note);
+    if (refundLineItems.length) input.refundLineItems = refundLineItems;
+    if (refundDuties.length) input.refundDuties = refundDuties;
+    if (shipping) input.shipping = shipping;
+
+    const currency =
+      body.currency ||
+      suggested?.amountSet?.presentmentMoney?.currencyCode ||
+      null;
+    if (currency) input.currency = String(currency).toUpperCase();
+
+    const mutation = `
+      mutation RefundCreate($input: RefundInput!) {
+        refundCreate(input: $input) {
+          refund { ${REFUND_FIELDS} }
+          order {
+            id
+            name
+            displayFinancialStatus
+            totalRefundedSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, { input });
+    const result = data.refundCreate;
+    const userErrors = result?.userErrors || [];
+
+    if (userErrors.length) {
+      return res.status(422).json({
+        ok: false,
+        message: userErrors.map((e) => e.message).join(" | "),
+        userErrors,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      refund: result.refund,
+      order: result.order,
+    });
+  } catch (error) {
+    console.error("[REFUND_CREATE]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to create refund.",
+    });
+  }
+});
+
+// ── GET /api/shopify/orders/:orderId/refunds ─────────────────────────────────
+app.get("/api/shopify/orders/:orderId/refunds", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  try {
+    const first = Math.min(Number(req.query.limit) || 50, 250);
+    const query = `
+      query OrderRefunds($id: ID!, $first: Int!) {
+        order(id: $id) {
+          id
+          name
+          displayFinancialStatus
+          totalRefundedSet { shopMoney { amount currencyCode } presentmentMoney { amount currencyCode } }
+          refunds(first: $first) { ${REFUND_FIELDS} }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(query, { id: orderGid, first });
+    if (!data.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${req.params.orderId} not found.` });
+    }
+
+    return res.json({
+      ok: true,
+      order: {
+        id: data.order.id,
+        name: data.order.name,
+        financialStatus: data.order.displayFinancialStatus,
+        totalRefunded: data.order.totalRefundedSet,
+      },
+      refunds: data.order.refunds || [],
+    });
+  } catch (error) {
+    console.error("[REFUND_LIST]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to fetch refunds.",
     });
   }
 });
