@@ -56,7 +56,7 @@ const ERP_DASHBOARD_IMAGE_UPLOAD_URL =
   "https://erp.threadx.pk/api/upload-dashboard-image";
 const SHOPIFY_SCOPES = (
   process.env.SHOPIFY_SCOPES ||
-  "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications"
+  "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications,write_orders,read_orders"
 ).trim();
 // Mutable — updated at runtime when OAuth completes
 let SHOPIFY_ADMIN_ACCESS_TOKEN = process.env.SHOPIFY_ADMIN_ACCESS_TOKEN || "";
@@ -2379,6 +2379,69 @@ app.post("/api/shopify/draft-orders", async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: error?.message || "Failed to create draft order.",
+    });
+  }
+});
+
+// ── POST /api/shopify/orders ─────────────────────────────────────────────────
+// Creates a real Shopify order directly via the GraphQL orderCreate mutation
+// (no draft/invoice step — the order exists immediately). Note: orderCreate is
+// a restricted mutation gated by Shopify on the write_orders scope; if the
+// access token's app hasn't been granted it, Shopify returns a userError here.
+// Body: { order: OrderCreateOrderInput, options?: OrderCreateOptionsInput }
+app.post("/api/shopify/orders", async (req, res) => {
+  const { order, options } = req.body || {};
+  if (!order || typeof order !== "object") {
+    return res
+      .status(400)
+      .json({ ok: false, message: "order object is required." });
+  }
+
+  try {
+    const mutation = `
+      mutation orderCreate($order: OrderCreateOrderInput!, $options: OrderCreateOptionsInput) {
+        orderCreate(order: $order, options: $options) {
+          order {
+            id
+            name
+            displayFinancialStatus
+            displayFulfillmentStatus
+            totalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            createdAt
+          }
+          userErrors {
+            field
+            message
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyAdminGraphql(mutation, { order, options });
+
+    const result = data?.orderCreate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(400).json({
+        ok: false,
+        message: userErrors[0]?.message || "Shopify returned user errors.",
+        userErrors,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      order: result?.order,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to create order.",
     });
   }
 });
