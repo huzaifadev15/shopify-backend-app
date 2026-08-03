@@ -2588,7 +2588,7 @@ async function createCheckoutProductForItem(item) {
     {
       product: {
         title: productTitle,
-        status: "ACTIVE",
+        status: "DRAFT",
         tags: [
           "custom-patch-checkout",
           `qty-${qty}`,
