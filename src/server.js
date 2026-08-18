@@ -43,6 +43,70 @@ app.use(
   }),
 );
 
+// ── Geo restriction for /api/ai ───────────────────────────────────────────────
+// The AI endpoints burn paid fal.ai credits, so they are limited to the markets
+// we actually sell in. Country comes from Vercel's edge header (cf-ipcountry is
+// accepted too, in case the app is fronted by Cloudflare instead).
+const GEO_ALLOWED_COUNTRIES = (process.env.GEO_ALLOWED_COUNTRIES || "US,CA")
+  .split(",")
+  .map((item) => item.trim().toUpperCase())
+  .filter(Boolean);
+const GEO_BLOCK_ENABLED =
+  String(process.env.GEO_BLOCK_ENABLED ?? "1").trim() !== "0";
+// When the platform gives us no country (local dev, curl against the origin
+// directly) we allow by default. Set GEO_BLOCK_UNKNOWN=1 to fail closed.
+const GEO_BLOCK_UNKNOWN =
+  String(process.env.GEO_BLOCK_UNKNOWN || "0").trim() === "1";
+const GEO_ALLOW_IPS = new Set(
+  (process.env.GEO_ALLOW_IPS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
+
+function getRequestCountry(req) {
+  const raw =
+    req.headers["x-vercel-ip-country"] ||
+    req.headers["cf-ipcountry"] ||
+    req.headers["x-country-code"] ||
+    "";
+  const code = String(Array.isArray(raw) ? raw[0] : raw)
+    .trim()
+    .toUpperCase();
+  // "XX" / "T1" mean "unknown" or "Tor exit node" — not real countries.
+  return code && code !== "XX" && code !== "T1" ? code : null;
+}
+
+function enforceGeoRestriction(req, res, next) {
+  if (!GEO_BLOCK_ENABLED) return next();
+
+  const ip = getClientIp(req);
+  if (ip && GEO_ALLOW_IPS.has(ip)) return next();
+
+  const country = getRequestCountry(req);
+  if (!country) {
+    if (!GEO_BLOCK_UNKNOWN) return next();
+    console.warn(`[GEO] Blocked ${req.method} ${req.originalUrl} — unknown country (ip=${ip || "unknown"})`);
+    return res.status(403).json({
+      ok: false,
+      code: "GEO_BLOCKED",
+      message: "This service is only available in the United States and Canada.",
+    });
+  }
+
+  if (GEO_ALLOWED_COUNTRIES.includes(country)) return next();
+
+  console.warn(`[GEO] Blocked ${req.method} ${req.originalUrl} from ${country} (ip=${ip || "unknown"})`);
+  return res.status(403).json({
+    ok: false,
+    code: "GEO_BLOCKED",
+    message: "This service is only available in the United States and Canada.",
+  });
+}
+
+// Mounted on the router path only, so the rest of the API is untouched.
+app.use("/api/ai", enforceGeoRestriction);
+
 const PORT = Number(process.env.PORT || 8787);
 const QUOTE_SECRET = process.env.QUOTE_SECRET || "dev-secret";
 const PRICING_FILE = process.env.PRICING_FILE || "./data/pricing.json";
