@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { readFile } from "fs/promises";
+import { createRequire } from "module";
 import path from "path";
 import multer from "multer";
 import { fal } from "@fal-ai/client";
@@ -45,18 +46,34 @@ app.use(
 
 // ── Geo restriction for /api/ai ───────────────────────────────────────────────
 // The AI endpoints burn paid fal.ai credits, so they are limited to the markets
-// we actually sell in. Country comes from Vercel's edge header (cf-ipcountry is
-// accepted too, in case the app is fronted by Cloudflare instead).
+// we actually sell in. We resolve the country in two steps:
+//   1. A CDN/edge header, if one is present (Cloudflare, CloudFront, Vercel).
+//   2. Otherwise an offline IP -> country lookup (geoip-lite). This is the path
+//      that actually runs on the Plesk box, since Nginx/Apache send no such
+//      header. The database ships with the package; to refresh it later run
+//      `npm run updatedb license_key=YOUR_MAXMIND_KEY` inside
+//      node_modules/geoip-lite (needs a free MaxMind GeoLite2 account).
 const GEO_ALLOWED_COUNTRIES = (process.env.GEO_ALLOWED_COUNTRIES || "US,CA")
   .split(",")
   .map((item) => item.trim().toUpperCase())
   .filter(Boolean);
 const GEO_BLOCK_ENABLED =
   String(process.env.GEO_BLOCK_ENABLED ?? "1").trim() !== "0";
-// When the platform gives us no country (local dev, curl against the origin
-// directly) we allow by default. Set GEO_BLOCK_UNKNOWN=1 to fail closed.
+// We fail closed: if the platform gives us no country header, the request is
+// blocked. Requests coming from localhost / private ranges (local dev, curl
+// against the origin directly) are exempt so development still works.
+// Set GEO_BLOCK_UNKNOWN=0 to go back to allowing unknown countries.
 const GEO_BLOCK_UNKNOWN =
-  String(process.env.GEO_BLOCK_UNKNOWN || "0").trim() === "1";
+  String(process.env.GEO_BLOCK_UNKNOWN ?? "1").trim() !== "0";
+// Country headers are only trustworthy when a CDN/edge you control sets them
+// AND strips any client-supplied copy. On a plain Plesk/Nginx box nothing does
+// that, so a caller could simply send `x-country-code: US` to walk past the
+// gate — hence default off. Turn on only if you put Cloudflare in front.
+const GEO_TRUST_HEADERS =
+  String(process.env.GEO_TRUST_HEADERS ?? "0").trim() === "1";
+// Set GEO_IP_LOOKUP=0 to skip the offline database and rely on headers only.
+const GEO_IP_LOOKUP_ENABLED =
+  String(process.env.GEO_IP_LOOKUP ?? "1").trim() !== "0";
 const GEO_ALLOW_IPS = new Set(
   (process.env.GEO_ALLOW_IPS || "")
     .split(",")
@@ -64,7 +81,84 @@ const GEO_ALLOW_IPS = new Set(
     .filter(Boolean),
 );
 
+// Loopback / RFC1918 / link-local. Used to keep local development working
+// while unknown countries are blocked everywhere else.
+function isLocalIp(ip) {
+  if (!ip) return false;
+  const value = String(ip).trim().replace(/^::ffff:/i, "").toLowerCase();
+  if (value === "::1" || value === "127.0.0.1" || value === "localhost") return true;
+  if (/^127\./.test(value)) return true;
+  if (/^10\./.test(value)) return true;
+  if (/^192\.168\./.test(value)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(value)) return true;
+  if (/^169\.254\./.test(value)) return true;
+  if (/^f[cd]/.test(value)) return true; // fc00::/7 unique-local
+  if (/^fe80:/.test(value)) return true; // link-local
+  return false;
+}
+
+// geoip-lite is loaded lazily so a missing/broken install degrades to
+// header-only matching instead of taking the whole server down at boot.
+const requireCjs = createRequire(import.meta.url);
+let geoipModule;
+let geoipLoadFailed = false;
+function getGeoip() {
+  if (geoipModule || geoipLoadFailed) return geoipModule;
+  try {
+    geoipModule = requireCjs("geoip-lite");
+  } catch (err) {
+    geoipLoadFailed = true;
+    console.error(
+      `[GEO] geoip-lite unavailable (${err?.message || err}) — falling back to header-only country detection.`,
+    );
+  }
+  return geoipModule;
+}
+
+// getClientIp() reads the LEFTMOST x-forwarded-for entry, which is what we want
+// for logging but is attacker-controlled: Nginx appends the real peer to
+// whatever the client sent, so "X-Forwarded-For: 8.8.8.8" from Berlin reads as
+// US. For the geo gate we instead count from the RIGHT — the last entries are
+// the ones our own proxies appended. GEO_PROXY_HOPS is how many proxies sit in
+// front of Node (Plesk Nginx alone = 1; add 1 if you later add Cloudflare).
+const GEO_PROXY_HOPS = Math.max(
+  1,
+  Number.parseInt(process.env.GEO_PROXY_HOPS ?? "1", 10) || 1,
+);
+
+function getGeoClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  const chain = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+  const parts = String(chain || "")
+    .split(",")
+    .map((item) => item.trim().replace(/^::ffff:/i, ""))
+    .filter(Boolean);
+  if (parts.length) {
+    // With N trusted proxies the client is at index length - N.
+    const index = parts.length - GEO_PROXY_HOPS;
+    const candidate = parts[index >= 0 ? index : 0];
+    if (candidate) return candidate.slice(0, 45);
+  }
+  const direct = String(req.socket?.remoteAddress || "")
+    .trim()
+    .replace(/^::ffff:/i, "");
+  return direct ? direct.slice(0, 45) : null;
+}
+
+function lookupCountryByIp(ip) {
+  if (!GEO_IP_LOOKUP_ENABLED || !ip || isLocalIp(ip)) return null;
+  const geoip = getGeoip();
+  if (!geoip) return null;
+  try {
+    const code = geoip.lookup(ip)?.country;
+    return code ? String(code).trim().toUpperCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 function getRequestCountry(req) {
+  if (!GEO_TRUST_HEADERS) return null;
   const raw =
     req.headers["x-vercel-ip-country"] ||
     req.headers["cf-ipcountry"] ||
@@ -83,9 +177,11 @@ function enforceGeoRestriction(req, res, next) {
   const ip = getClientIp(req);
   if (ip && GEO_ALLOW_IPS.has(ip)) return next();
 
-  const country = getRequestCountry(req);
+  const geoIp = getGeoClientIp(req);
+  const country = getRequestCountry(req) || lookupCountryByIp(geoIp);
   if (!country) {
     if (!GEO_BLOCK_UNKNOWN) return next();
+    if (isLocalIp(ip)) return next();
     console.warn(`[GEO] Blocked ${req.method} ${req.originalUrl} — unknown country (ip=${ip || "unknown"})`);
     return res.status(403).json({
       ok: false,
