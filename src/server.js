@@ -57,8 +57,10 @@ const GEO_ALLOWED_COUNTRIES = (process.env.GEO_ALLOWED_COUNTRIES || "US,CA")
   .split(",")
   .map((item) => item.trim().toUpperCase())
   .filter(Boolean);
+// OFF by default — the gate was a test and /api/ai is open to all countries.
+// Set GEO_BLOCK_ENABLED=1 to switch it back on (US/CA per GEO_ALLOWED_COUNTRIES).
 const GEO_BLOCK_ENABLED =
-  String(process.env.GEO_BLOCK_ENABLED ?? "1").trim() !== "0";
+  String(process.env.GEO_BLOCK_ENABLED ?? "0").trim() === "1";
 // We fail closed: if the platform gives us no country header, the request is
 // blocked. Requests coming from localhost / private ranges (local dev, curl
 // against the origin directly) are exempt so development still works.
