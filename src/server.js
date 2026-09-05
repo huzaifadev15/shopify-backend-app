@@ -2674,6 +2674,11 @@ async function createCheckoutProductForItem(item) {
   const backing = options.backing || "";
   const border = options.border || "";
   const colors = options.colors || "";
+  // Shopify rejects attribute values over 255 chars, and one over-long note
+  // would fail the whole draft order rather than just dropping the note.
+  const designNotes = String(options.designNotes || options.notes || "")
+    .trim()
+    .slice(0, 255);
 
   const productTitle = `${patchType} — ${qty} pcs, ${size}${shape ? `, ${shape}` : ""}`;
 
@@ -2841,6 +2846,7 @@ async function createCheckoutProductForItem(item) {
       ...(colors ? [{ key: "Colors", value: colors }] : []),
       { key: "Quantity", value: String(qty) },
       { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
+      ...(designNotes ? [{ key: "Design Notes", value: designNotes }] : []),
     ],
   };
 }
