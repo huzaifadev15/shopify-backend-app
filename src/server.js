@@ -2431,6 +2431,7 @@ async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
     `mutation fileCreate($files: [FileCreateInput!]!) {
       fileCreate(files: $files) {
         files {
+          id
           ... on MediaImage  { image { url } }
           ... on GenericFile { url }
         }
@@ -2456,7 +2457,31 @@ async function uploadBufferToShopifyFiles(buffer, mimetype, fileName) {
   }
 
   const createdFile = fileData.fileCreate.files[0];
-  const url = createdFile?.image?.url ?? createdFile?.url ?? target.resourceUrl;
+  let url = createdFile?.image?.url ?? createdFile?.url ?? null;
+
+  // fileCreate is async — Shopify may not have the permanent CDN URL yet.
+  // Poll until the file is READY (up to ~15 s) so we never return a staged URL.
+  if (!url && createdFile?.id) {
+    const FILE_STATUS_QUERY = `query fileById($id: ID!) {
+      node(id: $id) {
+        ... on MediaImage  { fileStatus, image { url } }
+        ... on GenericFile { fileStatus, url }
+      }
+    }`;
+    const MAX_POLLS = 10;
+    const POLL_MS = 1500;
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      const poll = await shopifyAdminGraphql(FILE_STATUS_QUERY, { id: createdFile.id });
+      const node = poll.node;
+      if (!node) break;
+      const resolvedUrl = node.image?.url ?? node.url ?? null;
+      if (resolvedUrl) { url = resolvedUrl; break; }
+      if (node.fileStatus === "FAILED") break;
+    }
+  }
+
+  if (!url) url = target.resourceUrl;
   return { url, resourceUrl: target.resourceUrl };
 }
 
