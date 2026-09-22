@@ -2352,6 +2352,7 @@ app.post(
       const erpResponse = await fetch(ERP_DASHBOARD_IMAGE_UPLOAD_URL, {
         method: "POST",
         body: form,
+        signal: AbortSignal.timeout(30_000),
       });
 
       const contentType = erpResponse.headers.get("content-type") || "";
@@ -2979,6 +2980,36 @@ app.post("/api/shopify/checkout", async (req, res) => {
       });
     }
 
+    // Fire-and-forget ERP forwarding so checkout orders show artwork images.
+    {
+      const artworkUrls = rawItems.map((i) => i.imageUrl).filter(Boolean);
+      if (!artworkUrls.length) {
+        console.warn("[CHECKOUT] No artwork URLs in rawItems:", JSON.stringify(rawItems.map((i) => ({ imageUrl: i.imageUrl, productName: i.productName }))));
+      }
+      const erpPayload = {
+        patchType: rawItems[0]?.options?.patchType || rawItems[0]?.productName || "Custom Patch",
+        shape: rawItems[0]?.options?.shape || "",
+        backing: rawItems[0]?.options?.backing || "",
+        border: rawItems[0]?.options?.border || "",
+        colors: rawItems[0]?.options?.colors || "",
+        size: rawItems[0]?.options?.size || "",
+        quantity: builtItems.reduce((s, i) => s + i.qty, 0),
+        unitPrice: builtItems[0]?.unitPrice || 0,
+        subTotal: builtItems.reduce((s, i) => s + i.total, 0),
+        uploadedFiles: artworkUrls.map((url) => ({ fileUrl: url })),
+        image: artworkUrls[0] || "",
+        notes: rawItems[0]?.options?.designNotes || rawItems[0]?.notes || "",
+        shopifyOrderId: draftOrder.id,
+        invoiceUrl: draftOrder.invoiceUrl,
+        storeType: "shopify",
+        customerIp: getClientIp(req),
+      };
+      Promise.all([
+        submitFormToStore("outjackets", erpPayload),
+        submitFormToStore("neonsigns", erpPayload),
+      ]).catch((err) => console.error("[CHECKOUT→ERP] forward failed:", err?.message));
+    }
+
     return res.json({
       ok: true,
       invoiceUrl: appendCheckoutParams(draftOrder.invoiceUrl),
@@ -3076,6 +3107,33 @@ app.post("/api/shopify/checkout/shoppay", async (req, res) => {
         message: "Draft order created but invoiceUrl not returned.",
         draftOrder,
       });
+    }
+
+    // Fire-and-forget ERP forwarding (same as /checkout above).
+    {
+      const artworkUrls = rawItems.map((i) => i.imageUrl).filter(Boolean);
+      const erpPayload = {
+        patchType: rawItems[0]?.options?.patchType || rawItems[0]?.productName || "Custom Patch",
+        shape: rawItems[0]?.options?.shape || "",
+        backing: rawItems[0]?.options?.backing || "",
+        border: rawItems[0]?.options?.border || "",
+        colors: rawItems[0]?.options?.colors || "",
+        size: rawItems[0]?.options?.size || "",
+        quantity: builtItems.reduce((s, i) => s + i.qty, 0),
+        unitPrice: builtItems[0]?.unitPrice || 0,
+        subTotal: builtItems.reduce((s, i) => s + i.total, 0),
+        uploadedFiles: artworkUrls.map((url) => ({ fileUrl: url })),
+        image: artworkUrls[0] || "",
+        notes: rawItems[0]?.options?.designNotes || rawItems[0]?.notes || "",
+        shopifyOrderId: draftOrder.id,
+        invoiceUrl: draftOrder.invoiceUrl,
+        storeType: "shopify",
+        customerIp: getClientIp(req),
+      };
+      Promise.all([
+        submitFormToStore("outjackets", erpPayload),
+        submitFormToStore("neonsigns", erpPayload),
+      ]).catch((err) => console.error("[SHOPPAY→ERP] forward failed:", err?.message));
     }
 
     // Return invoiceUrl with ?payment=shop_pay — no skip_shop_pay param
@@ -3348,6 +3406,20 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     const draftOrder = result?.draftOrder;
 
     // ── Forward to form submission API ────────────────────────────────────────
+    const artworkUrl =
+      Array.isArray(uploadedFiles) && uploadedFiles.length > 0
+        ? uploadedFiles[0]?.fileUrl || uploadedFiles[0]?.url || ""
+        : "";
+
+    if (!artworkUrl) {
+      console.warn(
+        "[FROM-FORM] No artwork URL — uploadedFiles:",
+        JSON.stringify(uploadedFiles),
+        "| email:", email,
+        "| patchType:", patchType,
+      );
+    }
+
     const formPayload = {
       email,
       phoneNumber,
@@ -3363,6 +3435,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       unitPrice,
       subTotal,
       uploadedFiles,
+      image: artworkUrl,
       notes,
       customerName,
       firstCampaign,
