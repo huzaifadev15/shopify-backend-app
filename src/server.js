@@ -6,6 +6,7 @@ import { createRequire } from "module";
 import path from "path";
 import multer from "multer";
 import { fal } from "@fal-ai/client";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
 import {
@@ -216,6 +217,20 @@ const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
 const ERP_DASHBOARD_IMAGE_UPLOAD_URL =
   process.env.ERP_DASHBOARD_IMAGE_UPLOAD_URL ||
   "https://erp.threadx.pk/api/upload-dashboard-image";
+
+const R2_ACCOUNT_ID = (process.env.R2_ACCOUNT_ID || "").trim();
+const R2_BUCKET = (process.env.R2_BUCKET || "fineyst-artwork").trim();
+const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || "").trim().replace(/\/$/, "");
+const r2Client = R2_ACCOUNT_ID
+  ? new S3Client({
+      region: "auto",
+      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+      credentials: {
+        accessKeyId: (process.env.R2_ACCESS_KEY_ID || "").trim(),
+        secretAccessKey: (process.env.R2_SECRET_ACCESS_KEY || "").trim(),
+      },
+    })
+  : null;
 const SHOPIFY_SCOPES = (
   process.env.SHOPIFY_SCOPES ||
   "write_files,read_files,write_discounts,read_discounts,write_cart_transforms,read_cart_transforms,read_locations,write_products,read_products,write_inventory,read_inventory,read_publications,write_publications,write_orders,read_orders"
@@ -2332,6 +2347,29 @@ app.post(
       });
     }
 
+    // Upload directly to Cloudflare R2 when configured.
+    if (r2Client && R2_PUBLIC_URL) {
+      try {
+        const ext = (req.file.originalname.split(".").pop() || "bin").toLowerCase();
+        const key = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+        await r2Client.send(
+          new PutObjectCommand({
+            Bucket: R2_BUCKET,
+            Key: key,
+            Body: req.file.buffer,
+            ContentType: req.file.mimetype,
+          }),
+        );
+        const fileUrl = `${R2_PUBLIC_URL}/${key}`;
+        console.log("[R2_UPLOAD] Uploaded artwork:", fileUrl);
+        return res.json({ success: true, url: fileUrl, fileUrl });
+      } catch (err) {
+        console.error("[R2_UPLOAD] Failed, falling back to ERP proxy:", err?.message);
+        // Fall through to ERP proxy below.
+      }
+    }
+
+    // Fallback: proxy to ERP (used when R2 is not configured or upload failed).
     try {
       const form = new FormData();
 
@@ -2365,7 +2403,7 @@ app.post(
       console.error("[DASHBOARD_IMAGE_UPLOAD] Proxy error:", error);
       return res.status(502).json({
         success: false,
-        error: error?.message || "Failed to proxy dashboard image upload",
+        error: error?.message || "Failed to upload image",
       });
     }
   },
@@ -3658,12 +3696,14 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         variantId: createdVariant.id,
         qty,
         productTitle,
+        productImage: resolvedImageUrl || "",
         customAttributes: [
           { key: "Quantity", value: String(qty) },
           patchType ? { key: "Patch Type", value: patchType } : null,
           size ? { key: "Size", value: String(size) } : null,
           backing ? { key: "Backing", value: backing } : null,
           borderValue ? { key: "Border", value: borderValue } : null,
+          resolvedImageUrl ? { key: "Artwork File 1", value: resolvedImageUrl } : null,
         ].filter(Boolean),
       });
     }
@@ -3718,6 +3758,38 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
     }
 
     const draftOrder = draftData?.draftOrderCreate?.draftOrder;
+
+    // Forward manual orders to ERP so they show up with artwork images.
+    {
+      const firstItem = items[0] || {};
+      const firstBuilt = builtLineItems[0] || {};
+      const imgUrl = firstBuilt.productImage || "";
+      const erpPayload = {
+        patchType: firstItem.patchType || firstBuilt.productTitle || "Manual Order",
+        shape: "",
+        backing: firstItem.backing || "",
+        border: firstItem.border || firstItem.broder || "",
+        colors: "",
+        size: firstItem.size || "",
+        quantity: builtLineItems.reduce((s, i) => s + i.qty, 0),
+        unitPrice: parseFloat(firstItem.price) || 0,
+        subTotal: items.reduce((s, it) => s + (parseInt(it.qty) || 1) * (parseFloat(it.price) || 0), 0),
+        uploadedFiles: imgUrl ? [{ fileUrl: imgUrl }] : [],
+        image: imgUrl,
+        notes: "",
+        email: email || "",
+        customerName: customerName || "",
+        shopifyOrderId: draftOrder?.id,
+        invoiceUrl: draftOrder?.invoiceUrl,
+        storeType: "shopify",
+        customerIp: getClientIp(req),
+      };
+      Promise.all([
+        submitFormToStore("outjackets", erpPayload),
+        submitFormToStore("neonsigns", erpPayload),
+      ]).catch((err) => console.error("[MANUAL→ERP] forward failed:", err?.message));
+    }
+
     return res.json({
       ok: true,
       productId: createdProductIds[0],

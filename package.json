@@ -8,6 +8,7 @@
     "start": "node src/server.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1137.0",
     "@fal-ai/client": "^1.10.1",
     "@shopify/shopify_function": "~2.0.0",
     "@upstash/qstash": "^2.11.1",
