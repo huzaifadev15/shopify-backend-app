@@ -214,10 +214,6 @@ const SHOPIFY_API_VERSION = process.env.SHOPIFY_API_VERSION || "2026-04";
 const SHOPIFY_API_KEY = (process.env.SHOPIFY_API_KEY || "").trim();
 const SHOPIFY_API_SECRET = (process.env.SHOPIFY_API_SECRET || "").trim();
 const APP_URL = (process.env.APP_URL || "").trim().replace(/\/$/, "");
-const ERP_DASHBOARD_IMAGE_UPLOAD_URL =
-  process.env.ERP_DASHBOARD_IMAGE_UPLOAD_URL ||
-  "https://erp.threadx.pk/api/upload-dashboard-image";
-
 const R2_ACCOUNT_ID = (process.env.R2_ACCOUNT_ID || "").trim();
 const R2_BUCKET = (process.env.R2_BUCKET || "fineyst-artwork").trim();
 const R2_PUBLIC_URL = (process.env.R2_PUBLIC_URL || "").trim().replace(/\/$/, "");
@@ -2347,60 +2343,22 @@ app.post(
       });
     }
 
-    // Upload directly to Cloudflare R2 when configured.
-    if (r2Client && R2_PUBLIC_URL) {
-      try {
-        const ext = (req.file.originalname.split(".").pop() || "bin").toLowerCase();
-        const key = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-        await r2Client.send(
-          new PutObjectCommand({
-            Bucket: R2_BUCKET,
-            Key: key,
-            Body: req.file.buffer,
-            ContentType: req.file.mimetype,
-          }),
-        );
-        const fileUrl = `${R2_PUBLIC_URL}/${key}`;
-        console.log("[R2_UPLOAD] Uploaded artwork:", fileUrl);
-        return res.json({ success: true, url: fileUrl, fileUrl });
-      } catch (err) {
-        console.error("[R2_UPLOAD] Failed, falling back to ERP proxy:", err?.message);
-        // Fall through to ERP proxy below.
-      }
-    }
-
-    // Fallback: proxy to ERP (used when R2 is not configured or upload failed).
     try {
-      const form = new FormData();
-
-      for (const [key, value] of Object.entries(req.body || {})) {
-        if (Array.isArray(value)) {
-          value.forEach((item) => form.append(key, item));
-        } else if (value !== undefined && value !== null) {
-          form.append(key, value);
-        }
-      }
-
-      form.append(
-        "file",
-        new Blob([req.file.buffer], { type: req.file.mimetype }),
-        req.file.originalname,
+      const ext = (req.file.originalname.split(".").pop() || "bin").toLowerCase();
+      const key = `uploads/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      await r2Client.send(
+        new PutObjectCommand({
+          Bucket: R2_BUCKET,
+          Key: key,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype,
+        }),
       );
-
-      const erpResponse = await fetch(ERP_DASHBOARD_IMAGE_UPLOAD_URL, {
-        method: "POST",
-        body: form,
-        signal: AbortSignal.timeout(30_000),
-      });
-
-      const contentType = erpResponse.headers.get("content-type") || "";
-      const body = await erpResponse.text();
-
-      res.status(erpResponse.status);
-      if (contentType) res.type(contentType);
-      return res.send(body);
+      const fileUrl = `${R2_PUBLIC_URL}/${key}`;
+      console.log("[R2_UPLOAD] Uploaded artwork:", fileUrl);
+      return res.json({ success: true, url: fileUrl, fileUrl });
     } catch (error) {
-      console.error("[DASHBOARD_IMAGE_UPLOAD] Proxy error:", error);
+      console.error("[R2_UPLOAD] Failed:", error?.message);
       return res.status(502).json({
         success: false,
         error: error?.message || "Failed to upload image",
