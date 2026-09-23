@@ -2260,7 +2260,7 @@ app.post("/api/forms/submit", async (req, res) => {
 // ── POST /api/upload — Shopify CDN via staged uploads ────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB — R2 has no cap; Shopify CDN leg fails gracefully on oversized files
   fileFilter(_req, file, cb) {
     const allowed = [
       "image/jpeg",
@@ -2340,6 +2340,14 @@ app.post(
       return res.status(400).json({
         success: false,
         error: "No file uploaded. Send a multipart field named 'file'.",
+      });
+    }
+
+    if (!r2Client) {
+      console.error("[R2_UPLOAD] r2Client is null — R2_ACCOUNT_ID env var missing");
+      return res.status(503).json({
+        success: false,
+        error: "Image storage is not configured. Set R2_ACCOUNT_ID on the server.",
       });
     }
 
