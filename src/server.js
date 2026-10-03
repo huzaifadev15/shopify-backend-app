@@ -2724,47 +2724,56 @@ async function createCheckoutProductForItem(item) {
         : `https://${SHOP_DOMAIN}${imageUrl.startsWith("/") ? "" : "/"}${imageUrl}`
     : "";
 
-  // Re-host the image on Shopify's own Files storage instead of passing the
-  // remote storefront CDN URL straight through. Storefront CDN URLs (custom
-  // domain + Cloudflare) content-negotiate on the Accept header — a generic
-  // fetch (like Shopify's own media downloader) can get back bytes whose
-  // content-type doesn't match the URL's file extension, which Shopify's
-  // media processing rejects. Fetching with an explicit Accept header here
-  // and re-uploading guarantees Shopify gets bytes that match.
+  // Attach the artwork image to the checkout product.
+  // R2 public URLs are stable and publicly accessible — pass them directly
+  // to Shopify as originalSource so Shopify downloads the image itself.
+  // Storefront CDN URLs need re-hosting because they content-negotiate on
+  // Accept headers and can return mismatched content-types.
   let mediaInput = [];
   if (resolvedImageUrl) {
-    try {
-      const imgRes = await fetch(resolvedImageUrl, {
-        headers: {
-          Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
-        },
-      });
-      if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
-
-      const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
-      const contentType = (imgRes.headers.get("content-type") || "image/jpeg")
-        .split(";")[0]
-        .trim();
-      const ext = contentType.split("/")[1] || "jpg";
-      const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-
-      const { url: cdnUrl } = await uploadBufferToShopifyFiles(
-        imageBuffer,
-        contentType,
-        fileName,
-      );
+    const isR2Url = resolvedImageUrl.includes(".r2.dev/");
+    if (isR2Url) {
       mediaInput = [
         {
-          originalSource: cdnUrl,
+          originalSource: resolvedImageUrl,
           alt: productTitle,
           mediaContentType: "IMAGE",
         },
       ];
-    } catch (err) {
-      console.error(
-        "[CHECKOUT] Image re-upload failed, creating product without image:",
-        err.message,
-      );
+    } else {
+      try {
+        const imgRes = await fetch(resolvedImageUrl, {
+          headers: {
+            Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+          },
+        });
+        if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
+
+        const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
+        const contentType = (imgRes.headers.get("content-type") || "image/jpeg")
+          .split(";")[0]
+          .trim();
+        const ext = contentType.split("/")[1] || "jpg";
+        const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+
+        const { url: cdnUrl } = await uploadBufferToShopifyFiles(
+          imageBuffer,
+          contentType,
+          fileName,
+        );
+        mediaInput = [
+          {
+            originalSource: cdnUrl,
+            alt: productTitle,
+            mediaContentType: "IMAGE",
+          },
+        ];
+      } catch (err) {
+        console.error(
+          "[CHECKOUT] Image re-upload failed, creating product without image:",
+          err.message,
+        );
+      }
     }
   }
 
