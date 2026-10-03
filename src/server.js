@@ -7,6 +7,7 @@ import path from "path";
 import multer from "multer";
 import { fal } from "@fal-ai/client";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import sharp from "sharp";
 import { loadPricing, matchRows, quoteFromRows } from "./pricing.js";
 import { signQuote } from "./token.js";
 import {
@@ -2726,13 +2727,39 @@ async function createCheckoutProductForItem(item) {
 
   let mediaInput = [];
   if (resolvedImageUrl) {
-    mediaInput = [
-      {
-        originalSource: resolvedImageUrl,
-        alt: productTitle,
-        mediaContentType: "IMAGE",
-      },
-    ];
+    try {
+      const imgRes = await fetch(resolvedImageUrl, {
+        headers: {
+          Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+        },
+      });
+      if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
+      const rawBuffer = Buffer.from(await imgRes.arrayBuffer());
+      const resizedBuffer = await sharp(rawBuffer)
+        .resize({ width: 2500, height: 2500, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      const { url: cdnUrl } = await uploadBufferToShopifyFiles(
+        resizedBuffer,
+        "image/jpeg",
+        fileName,
+      );
+      if (cdnUrl) {
+        mediaInput = [
+          {
+            originalSource: cdnUrl,
+            alt: productTitle,
+            mediaContentType: "IMAGE",
+          },
+        ];
+      }
+    } catch (err) {
+      console.error(
+        "[CHECKOUT] Image resize/upload failed, creating product without image:",
+        err.message,
+      );
+    }
   }
 
   const productData = await shopifyAdminGraphql(
