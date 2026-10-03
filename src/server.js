@@ -2844,6 +2844,7 @@ async function createCheckoutProductForItem(item) {
       { key: "Quantity", value: String(qty) },
       { key: "Unit Price", value: `$${unitPrice.toFixed(2)}` },
       ...(designNotes ? [{ key: "Design Notes", value: designNotes }] : []),
+      ...(resolvedImageUrl ? [{ key: "Artwork", value: resolvedImageUrl }] : []),
     ],
   };
 }
