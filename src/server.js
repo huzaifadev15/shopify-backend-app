@@ -2725,55 +2725,93 @@ async function createCheckoutProductForItem(item) {
     : "";
 
   // Attach the artwork image to the checkout product.
-  // R2 public URLs are stable and publicly accessible — pass them directly
-  // to Shopify as originalSource so Shopify downloads the image itself.
-  // Storefront CDN URLs need re-hosting because they content-negotiate on
-  // Accept headers and can return mismatched content-types.
+  // R2 public URLs: use fileCreate with the R2 URL as originalSource so
+  // Shopify downloads directly — avoids buffering large files in memory.
+  // Storefront CDN URLs: re-host via staged upload (content-negotiation fix).
   let mediaInput = [];
   if (resolvedImageUrl) {
     const isR2Url = resolvedImageUrl.includes(".r2.dev/");
-    if (isR2Url) {
-      mediaInput = [
-        {
-          originalSource: resolvedImageUrl,
-          alt: productTitle,
-          mediaContentType: "IMAGE",
-        },
-      ];
-    } else {
-      try {
+    try {
+      let shopifyFileUrl;
+      if (isR2Url) {
+        const ext = resolvedImageUrl.split(".").pop()?.split("?")[0] || "png";
+        const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const fileData = await shopifyAdminGraphql(
+          `mutation fileCreate($files: [FileCreateInput!]!) {
+            fileCreate(files: $files) {
+              files {
+                id
+                ... on MediaImage  { image { url } }
+                ... on GenericFile { url }
+              }
+              userErrors { field message }
+            }
+          }`,
+          {
+            files: [
+              {
+                contentType: "IMAGE",
+                originalSource: resolvedImageUrl,
+                filename: fileName,
+              },
+            ],
+          },
+        );
+        const fileErrors = fileData.fileCreate?.userErrors || [];
+        if (fileErrors.length) throw new Error(fileErrors[0].message);
+        const createdFile = fileData.fileCreate.files[0];
+        shopifyFileUrl = createdFile?.image?.url ?? createdFile?.url ?? null;
+        if (!shopifyFileUrl && createdFile?.id) {
+          const FILE_STATUS_QUERY = `query fileById($id: ID!) {
+            node(id: $id) {
+              ... on MediaImage  { fileStatus, image { url } }
+              ... on GenericFile { fileStatus, url }
+            }
+          }`;
+          for (let i = 0; i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const poll = await shopifyAdminGraphql(FILE_STATUS_QUERY, { id: createdFile.id });
+            const node = poll.node;
+            if (!node) break;
+            const resolvedUrl = node.image?.url ?? node.url ?? null;
+            if (resolvedUrl) { shopifyFileUrl = resolvedUrl; break; }
+            if (node.fileStatus === "FAILED") break;
+          }
+        }
+      } else {
         const imgRes = await fetch(resolvedImageUrl, {
           headers: {
             Accept: "image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
           },
         });
         if (!imgRes.ok) throw new Error(`Image fetch failed (${imgRes.status})`);
-
         const imageBuffer = Buffer.from(await imgRes.arrayBuffer());
         const contentType = (imgRes.headers.get("content-type") || "image/jpeg")
           .split(";")[0]
           .trim();
         const ext = contentType.split("/")[1] || "jpg";
         const fileName = `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-
         const { url: cdnUrl } = await uploadBufferToShopifyFiles(
           imageBuffer,
           contentType,
           fileName,
         );
+        shopifyFileUrl = cdnUrl;
+      }
+      if (shopifyFileUrl) {
         mediaInput = [
           {
-            originalSource: cdnUrl,
+            originalSource: shopifyFileUrl,
             alt: productTitle,
             mediaContentType: "IMAGE",
           },
         ];
-      } catch (err) {
-        console.error(
-          "[CHECKOUT] Image re-upload failed, creating product without image:",
-          err.message,
-        );
       }
+    } catch (err) {
+      console.error(
+        "[CHECKOUT] Image re-upload failed, creating product without image:",
+        err.message,
+      );
     }
   }
 
