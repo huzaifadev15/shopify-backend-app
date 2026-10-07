@@ -13,6 +13,7 @@
 // *_sha256 lists. Geographic fields and ip_address/user_agent are raw.
 
 import crypto from "crypto";
+import geoip from "geoip-lite";
 
 const ENDPOINT = "https://bzr.openai.com/v1/events";
 const PIXEL_ID = process.env.OPENAI_PIXEL_ID || "";
@@ -55,6 +56,24 @@ function splitName(full) {
   return { first: parts[0], last: parts.slice(1).join(" ") };
 }
 
+// Fill missing city/region/country from the IP. The MaxMind lookup is cheap
+// (offline, in-process) and gives OpenAI something to match on even when the
+// quote form didn't collect an address.
+function geoFromIp(ip) {
+  if (!ip) return null;
+  try {
+    const row = geoip.lookup(ip);
+    if (!row) return null;
+    return {
+      city: row.city || null,
+      region: row.region || null,
+      country: row.country || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function buildUser({
   email,
   phone,
@@ -92,10 +111,16 @@ export function buildUser({
 
   if (externalId) user.external_ids_sha256 = [sha256Hex(String(externalId))];
 
-  if (city) user.cities = [String(city)];
-  if (region) user.regions = [String(region)];
+  // Prefer explicit fields; fill the gaps from IP geolocation.
+  const geo = (!city || !region || !country) ? geoFromIp(ip) : null;
+  const finalCity = city || geo?.city;
+  const finalRegion = region || geo?.region;
+  const finalCountry = country || geo?.country;
+
+  if (finalCity) user.cities = [String(finalCity)];
+  if (finalRegion) user.regions = [String(finalRegion)];
   if (postalCode) user.postal_codes = [String(postalCode)];
-  if (country) user.countries = [String(country)];
+  if (finalCountry) user.countries = [String(finalCountry)];
 
   if (ip) user.ip_address = String(ip);
   if (userAgent) user.user_agent = String(userAgent);
