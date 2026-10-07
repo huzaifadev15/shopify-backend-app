@@ -15,6 +15,11 @@ import {
   handleDelivery,
   getQStashReceiver,
 } from "./formQueue.js";
+import {
+  sendEventAsync as sendOpenAiEventAsync,
+  buildUser as buildOpenAiUser,
+  toMinorUnits as toOpenAiMinorUnits,
+} from "./openai-capi.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -3309,6 +3314,7 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     lastCampaign,
     lastMedium,
     lastSource,
+    obref,
   } = req.body || {};
 
   const required = { email, patchType, quantity, unitPrice, subTotal };
@@ -3464,6 +3470,41 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
         ),
       ),
     ]);
+
+    // ── OpenAI Conversions API: lead_created ──────────────────────────────────
+    // Server-only; the theme no longer fires this via the browser pixel, so
+    // there is nothing to de-duplicate against. The id is keyed on the draft
+    // order so a retry of this endpoint for the same lead can't double-count.
+    try {
+      const draftOrderNumericId = draftOrder?.id
+        ? String(draftOrder.id).split("/").pop()
+        : "";
+      if (draftOrderNumericId) {
+        const amount = toOpenAiMinorUnits(subTotal || unitPrice || 0);
+        const dataObj = { type: "customer_action" };
+        if (amount > 0) {
+          dataObj.amount = amount;
+          dataObj.currency = "USD";
+        }
+        sendOpenAiEventAsync({
+          id: `lead_created-${draftOrderNumericId}`,
+          type: "lead_created",
+          sourceUrl: queryFrom || req.headers.referer || null,
+          dataObj,
+          user: buildOpenAiUser({
+            email,
+            phone: phoneNumber,
+            fullName: customerName,
+            ip: getClientIp(req),
+            userAgent: req.headers["user-agent"] || null,
+            obref,
+            externalId: email || null,
+          }),
+        });
+      }
+    } catch (capiErr) {
+      console.error("[OPENAI_CAPI] lead_created wiring failed:", capiErr?.message);
+    }
 
     return res.json({
       ok: true,
