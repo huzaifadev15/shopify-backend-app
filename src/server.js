@@ -5341,6 +5341,89 @@ app.post("/api/shopify/orders/:orderId/delivered", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/orders/:orderId/cancel-fulfillment ─────────────────────
+// Unfulfills an order by cancelling its fulfillments, which reopens the
+// fulfillment orders. Body: { fulfillmentId? } — without it every
+// non-cancelled fulfillment on the order is cancelled.
+app.post("/api/shopify/orders/:orderId/cancel-fulfillment", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  try {
+    let targets = [];
+    if (req.body?.fulfillmentId) {
+      targets = [toGid("Fulfillment", req.body.fulfillmentId)];
+    } else {
+      const orderData = await shopifyAdminGraphql(
+        `
+        query OrderFulfillmentsForCancel($id: ID!) {
+          order(id: $id) {
+            id
+            fulfillments(first: 25) { id status }
+          }
+        }
+      `,
+        { id: orderGid },
+      );
+
+      if (!orderData.order) {
+        return res.status(404).json({
+          ok: false,
+          message: `Order ${req.params.orderId} not found.`,
+        });
+      }
+
+      targets = (orderData.order.fulfillments || [])
+        .filter((f) => f.status !== "CANCELLED")
+        .map((f) => f.id);
+    }
+
+    if (!targets.length) {
+      return res.status(409).json({
+        ok: false,
+        message: "Order has no active fulfillment to cancel.",
+      });
+    }
+
+    const mutation = `
+      mutation CancelFulfillment($id: ID!) {
+        fulfillmentCancel(id: $id) {
+          fulfillment { id status }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const cancelled = [];
+    for (const id of targets) {
+      const data = await shopifyAdminGraphql(mutation, { id });
+      const result = data.fulfillmentCancel;
+      const userErrors = result?.userErrors || [];
+      if (userErrors.length) {
+        return res.status(422).json({
+          ok: false,
+          message: userErrors.map((e) => e.message).join(" | "),
+          userErrors,
+          cancelled,
+        });
+      }
+      cancelled.push(result.fulfillment);
+    }
+
+    return res.json({ ok: true, cancelled });
+  } catch (error) {
+    console.error("[ORDER_CANCEL_FULFILLMENT]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to cancel fulfillment.",
+    });
+  }
+});
+
 // ── POST /api/queue/deliver ───────────────────────────────────────────────────
 // QStash calls this endpoint to retry a failed form submission.
 // We verify the QStash signature, attempt delivery, and re-publish to QStash
