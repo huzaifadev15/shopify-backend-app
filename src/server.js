@@ -5248,6 +5248,99 @@ app.post("/api/shopify/orders/:orderId/fulfill", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/orders/:orderId/delivered ──────────────────────────────
+// Marks an order's fulfillment as delivered by adding a DELIVERED fulfillment
+// event. Body: { fulfillmentId? } — defaults to the latest non-cancelled
+// fulfillment. Shopify sends its own "delivered" email for this event based on
+// the shop's notification settings, so there is no notify flag here.
+app.post("/api/shopify/orders/:orderId/delivered", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  try {
+    let fulfillmentGid = req.body?.fulfillmentId
+      ? toGid("Fulfillment", req.body.fulfillmentId)
+      : null;
+
+    if (!fulfillmentGid) {
+      const orderData = await shopifyAdminGraphql(
+        `
+        query OrderFulfillmentsForDelivery($id: ID!) {
+          order(id: $id) {
+            id
+            fulfillments(first: 10) { id status }
+          }
+        }
+      `,
+        { id: orderGid },
+      );
+
+      if (!orderData.order) {
+        return res.status(404).json({
+          ok: false,
+          message: `Order ${req.params.orderId} not found.`,
+        });
+      }
+
+      const active = (orderData.order.fulfillments || []).filter(
+        (f) => f.status !== "CANCELLED",
+      );
+      fulfillmentGid = active.length ? active[active.length - 1].id : null;
+    }
+
+    if (!fulfillmentGid) {
+      return res.status(409).json({
+        ok: false,
+        message: "Order has no fulfillment to mark as delivered.",
+      });
+    }
+
+    const data = await shopifyAdminGraphql(
+      `
+      mutation FulfillmentMarkDelivered($fulfillmentEvent: FulfillmentEventInput!) {
+        fulfillmentEventCreate(fulfillmentEvent: $fulfillmentEvent) {
+          fulfillmentEvent { id status happenedAt }
+          userErrors { field message }
+        }
+      }
+    `,
+      {
+        fulfillmentEvent: {
+          fulfillmentId: fulfillmentGid,
+          status: "DELIVERED",
+          message: "Shipment delivered",
+        },
+      },
+    );
+
+    const result = data.fulfillmentEventCreate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(422).json({
+        ok: false,
+        message: userErrors.map((e) => e.message).join(" | "),
+        userErrors,
+      });
+    }
+
+    return res.status(201).json({
+      ok: true,
+      fulfillmentId: fulfillmentGid,
+      event: result.fulfillmentEvent,
+    });
+  } catch (error) {
+    console.error("[ORDER_DELIVERED]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to mark order as delivered.",
+    });
+  }
+});
+
 // ── POST /api/queue/deliver ───────────────────────────────────────────────────
 // QStash calls this endpoint to retry a failed form submission.
 // We verify the QStash signature, attempt delivery, and re-publish to QStash
