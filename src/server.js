@@ -4974,6 +4974,280 @@ app.get("/api/shopify/orders/:orderId/refunds", async (req, res) => {
   }
 });
 
+// ── POST /api/shopify/orders/:orderId/tracking ───────────────────────────────
+// Adds tracking to an order's fulfillment. Body: { trackingNumber, carrier,
+// trackingUrl?, notifyCustomer? (default false), fulfillmentId? }. Without fulfillmentId the
+// order's latest fulfillment is used; if the order has none yet, its open
+// fulfillment orders are fulfilled with the tracking attached.
+app.post("/api/shopify/orders/:orderId/tracking", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  const body = req.body || {};
+  const trackingNumber = String(
+    body.trackingNumber ?? body.tracking_number ?? "",
+  ).trim();
+  const carrier = String(body.carrier ?? body.company ?? "").trim();
+  const trackingUrl =
+    String(body.trackingUrl ?? body.tracking_url ?? "").trim() || null;
+  // Caller decides per request; anything other than an explicit true/"true"
+  // means no email, so customers are never notified by accident.
+  const notifyRaw = body.notifyCustomer ?? body.notify_customer;
+  const notifyCustomer = notifyRaw === true || notifyRaw === "true";
+
+  if (!trackingNumber || !carrier) {
+    return res.status(400).json({
+      ok: false,
+      message: "trackingNumber and carrier are required.",
+    });
+  }
+
+  const TRACKING_FIELDS = `
+    id
+    status
+    trackingInfo { number company url }
+  `;
+
+  try {
+    let fulfillmentGid = body.fulfillmentId
+      ? toGid("Fulfillment", body.fulfillmentId)
+      : null;
+
+    const orderData = await shopifyAdminGraphql(
+      `
+      query OrderFulfillments($id: ID!) {
+        order(id: $id) {
+          id
+          name
+          fulfillments(first: 10) { id status }
+          fulfillmentOrders(first: 25) {
+            nodes { id status }
+          }
+        }
+      }
+    `,
+      { id: orderGid },
+    );
+
+    if (!orderData.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${req.params.orderId} not found.` });
+    }
+
+    if (!fulfillmentGid) {
+      const active = (orderData.order.fulfillments || []).filter(
+        (f) => f.status !== "CANCELLED",
+      );
+      fulfillmentGid = active.length ? active[active.length - 1].id : null;
+    }
+
+    const trackingInfoInput = {
+      number: trackingNumber,
+      company: carrier,
+      ...(trackingUrl ? { url: trackingUrl } : {}),
+    };
+
+    // Existing fulfillment → update its tracking.
+    if (fulfillmentGid) {
+      const data = await shopifyAdminGraphql(
+        `
+        mutation FulfillmentAddTracking(
+          $fulfillmentId: ID!
+          $trackingInfoInput: FulfillmentTrackingInput!
+          $notifyCustomer: Boolean
+        ) {
+          fulfillmentTrackingInfoUpdate(
+            fulfillmentId: $fulfillmentId
+            trackingInfoInput: $trackingInfoInput
+            notifyCustomer: $notifyCustomer
+          ) {
+            fulfillment { ${TRACKING_FIELDS} }
+            userErrors { field message }
+          }
+        }
+      `,
+        { fulfillmentId: fulfillmentGid, trackingInfoInput, notifyCustomer },
+      );
+      const result = data.fulfillmentTrackingInfoUpdate;
+      const userErrors = result?.userErrors || [];
+      if (userErrors.length) {
+        return res.status(422).json({
+          ok: false,
+          message: userErrors.map((e) => e.message).join(" | "),
+          userErrors,
+        });
+      }
+      return res.json({ ok: true, fulfillment: result.fulfillment });
+    }
+
+    // No fulfillment yet → fulfill the open fulfillment orders with tracking.
+    const openFulfillmentOrders = (
+      orderData.order.fulfillmentOrders?.nodes || []
+    ).filter((fo) => fo.status === "OPEN" || fo.status === "IN_PROGRESS");
+
+    if (!openFulfillmentOrders.length) {
+      return res.status(409).json({
+        ok: false,
+        message: "Order has no fulfillment or open fulfillment order to attach tracking to.",
+      });
+    }
+
+    const data = await shopifyAdminGraphql(
+      `
+      mutation FulfillmentCreateWithTracking($fulfillment: FulfillmentInput!) {
+        fulfillmentCreate(fulfillment: $fulfillment) {
+          fulfillment { ${TRACKING_FIELDS} }
+          userErrors { field message }
+        }
+      }
+    `,
+      {
+        fulfillment: {
+          notifyCustomer,
+          trackingInfo: trackingInfoInput,
+          lineItemsByFulfillmentOrder: openFulfillmentOrders.map((fo) => ({
+            fulfillmentOrderId: fo.id,
+          })),
+        },
+      },
+    );
+    const result = data.fulfillmentCreate;
+    const userErrors = result?.userErrors || [];
+    if (userErrors.length) {
+      return res.status(422).json({
+        ok: false,
+        message: userErrors.map((e) => e.message).join(" | "),
+        userErrors,
+      });
+    }
+    return res.status(201).json({ ok: true, fulfillment: result.fulfillment });
+  } catch (error) {
+    console.error("[ORDER_TRACKING]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to add tracking.",
+    });
+  }
+});
+
+// ── POST /api/shopify/orders/:orderId/fulfill ────────────────────────────────
+// Marks an order as fulfilled. Body: { notifyCustomer? (default false),
+// fulfillmentOrderId? }. Without fulfillmentOrderId every open fulfillment
+// order is fulfilled. Shopify requires one fulfillmentCreate per location, so
+// fulfillment orders are grouped by their assigned location.
+app.post("/api/shopify/orders/:orderId/fulfill", async (req, res) => {
+  const orderGid = toGid("Order", req.params.orderId);
+  if (!orderGid) {
+    return res
+      .status(400)
+      .json({ ok: false, message: "orderId is required." });
+  }
+
+  const body = req.body || {};
+  const notifyRaw = body.notifyCustomer ?? body.notify_customer;
+  const notifyCustomer = notifyRaw === true || notifyRaw === "true";
+  const onlyFulfillmentOrderGid = body.fulfillmentOrderId
+    ? toGid("FulfillmentOrder", body.fulfillmentOrderId)
+    : null;
+
+  try {
+    const orderData = await shopifyAdminGraphql(
+      `
+      query OrderFulfillmentOrders($id: ID!) {
+        order(id: $id) {
+          id
+          name
+          displayFulfillmentStatus
+          fulfillmentOrders(first: 25) {
+            nodes {
+              id
+              status
+              assignedLocation { location { id } }
+            }
+          }
+        }
+      }
+    `,
+      { id: orderGid },
+    );
+
+    if (!orderData.order) {
+      return res
+        .status(404)
+        .json({ ok: false, message: `Order ${req.params.orderId} not found.` });
+    }
+
+    let targets = (orderData.order.fulfillmentOrders?.nodes || []).filter(
+      (fo) => fo.status === "OPEN" || fo.status === "IN_PROGRESS",
+    );
+    if (onlyFulfillmentOrderGid) {
+      targets = targets.filter((fo) => fo.id === onlyFulfillmentOrderGid);
+    }
+
+    if (!targets.length) {
+      return res.status(409).json({
+        ok: false,
+        message: onlyFulfillmentOrderGid
+          ? "That fulfillment order is not open."
+          : "Order has no open fulfillment orders (it may already be fulfilled).",
+        fulfillmentStatus: orderData.order.displayFulfillmentStatus,
+      });
+    }
+
+    const byLocation = new Map();
+    for (const fo of targets) {
+      const key = fo.assignedLocation?.location?.id || "none";
+      if (!byLocation.has(key)) byLocation.set(key, []);
+      byLocation.get(key).push(fo.id);
+    }
+
+    const mutation = `
+      mutation FulfillOrder($fulfillment: FulfillmentInput!) {
+        fulfillmentCreate(fulfillment: $fulfillment) {
+          fulfillment { id status }
+          userErrors { field message }
+        }
+      }
+    `;
+
+    const fulfillments = [];
+    for (const ids of byLocation.values()) {
+      const data = await shopifyAdminGraphql(mutation, {
+        fulfillment: {
+          notifyCustomer,
+          lineItemsByFulfillmentOrder: ids.map((fulfillmentOrderId) => ({
+            fulfillmentOrderId,
+          })),
+        },
+      });
+      const result = data.fulfillmentCreate;
+      const userErrors = result?.userErrors || [];
+      if (userErrors.length) {
+        return res.status(422).json({
+          ok: false,
+          message: userErrors.map((e) => e.message).join(" | "),
+          userErrors,
+          fulfillments,
+        });
+      }
+      fulfillments.push(result.fulfillment);
+    }
+
+    return res.status(201).json({ ok: true, fulfillments });
+  } catch (error) {
+    console.error("[ORDER_FULFILL]", error?.message);
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Failed to mark order as fulfilled.",
+    });
+  }
+});
+
 // ── POST /api/queue/deliver ───────────────────────────────────────────────────
 // QStash calls this endpoint to retry a failed form submission.
 // We verify the QStash signature, attempt delivery, and re-publish to QStash
