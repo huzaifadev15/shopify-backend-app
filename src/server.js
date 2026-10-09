@@ -3577,6 +3577,7 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
 
     for (const item of items) {
       const {
+        productType,
         quantity,
         backing,
         broder,
@@ -3586,30 +3587,53 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         size,
         productTitle: customProductTitle,
         patchType,
+        capType,
+        panel,
+        closureType,
       } = item;
 
       const qty = parseInt(quantity, 10);
+      const isCap = productType === "cap";
       const borderValue = border || broder || "";
+
       const productTitle =
         customProductTitle ||
-        [
-          "Manual Order",
-          `Qty: ${qty}`,
-          backing ? `Backing: ${backing}` : null,
-          borderValue ? `Border: ${borderValue}` : null,
-        ]
-          .filter(Boolean)
-          .join(" | ");
+        (isCap
+          ? [
+              "Cap Order",
+              `Qty: ${qty}`,
+              capType ? `Type: ${capType}` : null,
+              panel ? `Panel: ${panel}` : null,
+            ]
+              .filter(Boolean)
+              .join(" | ")
+          : [
+              "Manual Order",
+              `Qty: ${qty}`,
+              backing ? `Backing: ${backing}` : null,
+              borderValue ? `Border: ${borderValue}` : null,
+            ]
+              .filter(Boolean)
+              .join(" | "));
 
-      const descriptionLines = [
-        `Quantity: ${qty}`,
-        patchType ? `Patch Type: ${patchType}` : null,
-        size ? `Size: ${size}` : null,
-        backing ? `Backing: ${backing}` : null,
-        borderValue ? `Border: ${borderValue}` : null,
-      ]
-        .filter(Boolean)
-        .join("\n");
+      const descriptionLines = isCap
+        ? [
+            `Quantity: ${qty}`,
+            capType ? `Cap Type: ${capType}` : null,
+            panel ? `Panel: ${panel}` : null,
+            closureType ? `Closure Type: ${closureType}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n")
+        : [
+            `Quantity: ${qty}`,
+            patchType ? `Patch Type: ${patchType}` : null,
+            size ? `Size: ${size}` : null,
+            backing ? `Backing: ${backing}` : null,
+            borderValue ? `Border: ${borderValue}` : null,
+          ]
+            .filter(Boolean)
+            .join("\n");
 
       const resolvedImageUrl = productImage
         ? productImage.startsWith("http")
@@ -3638,7 +3662,12 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
             title: productTitle,
             descriptionHtml: descriptionLines.replace(/\n/g, "<br>"),
             status: "DRAFT",
-            tags: ["manual-order", `qty-${qty}`, ...(size ? [`size-${size}`] : [])],
+            tags: [
+              "manual-order",
+              isCap ? "cap-order" : "patch-order",
+              `qty-${qty}`,
+              ...(size ? [`size-${size}`] : []),
+            ],
             metafields: [
               {
                 namespace: "custom",
@@ -3700,11 +3729,20 @@ app.post("/api/shopify/draft-orders/manual", async (req, res) => {
         productTitle,
         productImage: resolvedImageUrl || "",
         customAttributes: [
+          { key: "Product Type", value: isCap ? "Cap" : "Patch" },
           { key: "Quantity", value: String(qty) },
-          patchType ? { key: "Patch Type", value: patchType } : null,
-          size ? { key: "Size", value: String(size) } : null,
-          backing ? { key: "Backing", value: backing } : null,
-          borderValue ? { key: "Border", value: borderValue } : null,
+          ...(isCap
+            ? [
+                capType ? { key: "Cap Type", value: capType } : null,
+                panel ? { key: "Panel", value: panel } : null,
+                closureType ? { key: "Closure Type", value: closureType } : null,
+              ]
+            : [
+                patchType ? { key: "Patch Type", value: patchType } : null,
+                size ? { key: "Size", value: String(size) } : null,
+                backing ? { key: "Backing", value: backing } : null,
+                borderValue ? { key: "Border", value: borderValue } : null,
+              ]),
           resolvedImageUrl ? { key: "Artwork File 1", value: resolvedImageUrl } : null,
         ].filter(Boolean),
       });
