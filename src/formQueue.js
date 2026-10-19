@@ -18,6 +18,7 @@ export const STORE_ENDPOINTS = {
   outjackets:
     "https://outjackets.com/api/b79df6da-543e-48eb-a4d1-04ed0abbb97d/forms/for-category/public",
   neonsigns: "https://dash.fineystpatches.com/api/forms/for-category/public",
+  pins: "https://dash.fineystpatches.com/api/forms/pins-form",
 };
 
 const SEND_TIMEOUT_MS = Number(process.env.FORM_SEND_TIMEOUT_MS || 15_000);

@@ -20,6 +20,11 @@ import {
   buildUser as buildOpenAiUser,
   toMinorUnits as toOpenAiMinorUnits,
 } from "./openai-capi.js";
+import {
+  sendEventAsync as sendMetaEventAsync,
+  buildUserData as buildMetaUserData,
+  toValue as toMetaValue,
+} from "./meta-capi.js";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -2263,6 +2268,63 @@ app.post("/api/forms/submit", async (req, res) => {
   }
 });
 
+// ── POST /api/forms/pins-form ─────────────────────────────────────────────────
+// Proxy for the pins page quote request → dashboard pins_forms table
+// (dash.fineystpatches.com/api/forms/pins-form), with the same QStash retry
+// queue as /api/forms/submit.
+app.post("/api/forms/pins-form", async (req, res) => {
+  const requiredFields = [
+    "email",
+    "phoneNumber",
+    "queryFrom",
+    "size",
+    "quantity",
+    "attachment",
+  ];
+
+  try {
+    const missingFields = requiredFields.filter(
+      (field) => req.body[field] === undefined || req.body[field] === null || req.body[field] === "",
+    );
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        message: `Missing required fields: ${missingFields.join(", ")}`,
+      });
+    }
+
+    const result = await submitFormToStore("pins", req.body);
+
+    if (result.ok) {
+      return res.status(200).json({
+        ok: true,
+        message: "Form submitted successfully",
+        data: result.data,
+      });
+    }
+
+    if (result.permanent) {
+      return res.status(result.status).json({
+        ok: false,
+        message: result.data?.error || result.data?.message || "Failed to submit form",
+        error: result.data,
+      });
+    }
+
+    return res.status(502).json({
+      ok: false,
+      message: "Store is unreachable. Please try again.",
+    });
+  } catch (error) {
+    console.error("Pins form submission error:", error);
+    return res.status(500).json({
+      ok: false,
+      message: "Internal server error while submitting form",
+      error: error?.message,
+    });
+  }
+});
+
 // ── POST /api/upload — Shopify CDN via staged uploads ────────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -3315,6 +3377,10 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
     lastMedium,
     lastSource,
     obref,
+    fbp,
+    fbc,
+    fbclid,
+    metaEventId,
   } = req.body || {};
 
   const required = { email, patchType, quantity, unitPrice, subTotal };
@@ -3504,6 +3570,41 @@ app.post("/api/shopify/draft-orders/from-form", async (req, res) => {
       }
     } catch (capiErr) {
       console.error("[OPENAI_CAPI] lead_created wiring failed:", capiErr?.message);
+    }
+
+    // ── Meta Conversions API: Lead ────────────────────────────────────────────
+    // If the theme also fires fbq('track','Lead',{}, {eventID}) it should send
+    // that same id as `metaEventId` so Meta de-duplicates the two. Otherwise we
+    // fall back to an id keyed on the draft order (replay-safe).
+    try {
+      const draftOrderNumericId = draftOrder?.id
+        ? String(draftOrder.id).split("/").pop()
+        : "";
+      const eventId =
+        (metaEventId && String(metaEventId)) ||
+        (draftOrderNumericId ? `lead-${draftOrderNumericId}` : "");
+      if (eventId) {
+        const value = toMetaValue(subTotal || unitPrice || 0);
+        sendMetaEventAsync({
+          eventId,
+          eventName: "Lead",
+          sourceUrl: queryFrom || req.headers.referer || null,
+          customData: value > 0 ? { value, currency: "USD" } : {},
+          userData: buildMetaUserData({
+            email,
+            phone: phoneNumber,
+            fullName: customerName,
+            ip: getClientIp(req),
+            userAgent: req.headers["user-agent"] || null,
+            fbp,
+            fbc,
+            fbclid,
+            externalId: email || null,
+          }),
+        });
+      }
+    } catch (capiErr) {
+      console.error("[META_CAPI] Lead wiring failed:", capiErr?.message);
     }
 
     return res.json({
