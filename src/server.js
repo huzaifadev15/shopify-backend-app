@@ -2296,6 +2296,69 @@ app.post("/api/forms/pins-form", async (req, res) => {
     const result = await submitFormToStore("pins", req.body);
 
     if (result.ok) {
+      // Lead tracking, keyed on the dashboard form id so retries can't double
+      // count and the dashboard's own OpenAI event (same id) de-duplicates.
+      try {
+        const {
+          email,
+          phoneNumber,
+          customerName,
+          queryFrom,
+          subTotal,
+          unitPrice,
+          obref,
+          fbp,
+          fbc,
+          fbclid,
+          metaEventId,
+        } = req.body;
+        const formId = result.data?.id ? String(result.data.id) : "";
+        if (formId) {
+          const amount = toOpenAiMinorUnits(subTotal || unitPrice || 0);
+          const dataObj = { type: "customer_action" };
+          if (amount > 0) {
+            dataObj.amount = amount;
+            dataObj.currency = "USD";
+          }
+          sendOpenAiEventAsync({
+            id: `lead_created-${formId}`,
+            type: "lead_created",
+            sourceUrl: queryFrom || req.headers.referer || null,
+            dataObj,
+            user: buildOpenAiUser({
+              email,
+              phone: phoneNumber,
+              fullName: customerName,
+              ip: getClientIp(req),
+              userAgent: req.headers["user-agent"] || null,
+              obref,
+              externalId: email || null,
+            }),
+          });
+
+          const value = toMetaValue(subTotal || unitPrice || 0);
+          sendMetaEventAsync({
+            eventId: (metaEventId && String(metaEventId)) || `lead-${formId}`,
+            eventName: "Lead",
+            sourceUrl: queryFrom || req.headers.referer || null,
+            customData: value > 0 ? { value, currency: "USD" } : {},
+            userData: buildMetaUserData({
+              email,
+              phone: phoneNumber,
+              fullName: customerName,
+              ip: getClientIp(req),
+              userAgent: req.headers["user-agent"] || null,
+              fbp,
+              fbc,
+              fbclid,
+              externalId: email || null,
+            }),
+          });
+        }
+      } catch (capiErr) {
+        console.error("[PINS_FORM] lead tracking failed:", capiErr?.message);
+      }
+
       return res.status(200).json({
         ok: true,
         message: "Form submitted successfully",
@@ -4010,6 +4073,32 @@ app.post("/api/shopify/orders/:orderId/send-invoice", async (req, res) => {
       ok: false,
       message: error?.message || "Failed to send draft order invoice.",
     });
+  }
+});
+
+// ── GET /api/pins-pricing/by-title ───────────────────────────────────────────
+// Proxies the dashboard's Pins Pricing tables (size x quantity, same pivoted
+// shape as /api/pricing/by-page-title) for the pins product page.
+app.get("/api/pins-pricing/by-title", async (req, res) => {
+  const title = req.query.title;
+
+  if (!title) {
+    return res.status(400).json({ error: "Title parameter is required" });
+  }
+
+  try {
+    const response = await fetch(
+      `https://dash.fineystpatches.com/api/pins-pricing/by-title?title=${encodeURIComponent(title)}`,
+    );
+    if (!response.ok) {
+      return res
+        .status(response.status)
+        .json({ error: "Failed to fetch pins pricing data" });
+    }
+
+    return res.json(await response.json());
+  } catch (_error) {
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
