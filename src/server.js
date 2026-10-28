@@ -4179,6 +4179,11 @@ app.post("/api/shopify/products", async (req, res) => {
     color,
     product_quantity,
     shipping,
+    // Hidden, order-only products (e.g. an invoice line item) pass
+    // status: "DRAFT", publish: false so they never show up in the storefront
+    // or other sales channels. Defaults keep existing callers unchanged.
+    status = "ACTIVE",
+    publish = true,
   } = req.body || {};
 
   if (!title) {
@@ -4248,7 +4253,7 @@ app.post("/api/shopify/products", async (req, res) => {
 
   const productInput = {
     title,
-    status: "ACTIVE",
+    status,
     ...(templateSuffix && { templateSuffix }),
     ...(vendor && { vendor }),
     ...(productType && { productType }),
@@ -4397,35 +4402,37 @@ app.post("/api/shopify/products", async (req, res) => {
     }
   }
 
-  // Step 4: Publish to all channels
+  // Step 4: Publish to all channels (skipped for hidden, order-only products)
   let onlineStoreUrl = createdProduct.onlineStoreUrl ?? null;
-  try {
-    const publicationInputs = await getProductPublicationInputs();
-    if (publicationInputs.length > 0) {
-      const pubData = await shopifyAdminGraphql(
-        `
-        mutation PublishProductToAllPublications($productId: ID!, $inputs: [PublicationInput!]!) {
-          publishablePublish(id: $productId, input: $inputs) {
-            publishable {
-              ... on Product { id onlineStoreUrl }
+  if (publish) {
+    try {
+      const publicationInputs = await getProductPublicationInputs();
+      if (publicationInputs.length > 0) {
+        const pubData = await shopifyAdminGraphql(
+          `
+          mutation PublishProductToAllPublications($productId: ID!, $inputs: [PublicationInput!]!) {
+            publishablePublish(id: $productId, input: $inputs) {
+              publishable {
+                ... on Product { id onlineStoreUrl }
+              }
+              userErrors { field message }
             }
-            userErrors { field message }
           }
-        }
-      `,
-        { productId: createdProduct.id, inputs: publicationInputs },
-      );
+        `,
+          { productId: createdProduct.id, inputs: publicationInputs },
+        );
 
-      const published = pubData.publishablePublish;
-      if (published.userErrors?.length > 0) {
-        console.warn("Publish warnings:", published.userErrors);
-      } else {
-        onlineStoreUrl =
-          published.publishable?.onlineStoreUrl ?? onlineStoreUrl;
+        const published = pubData.publishablePublish;
+        if (published.userErrors?.length > 0) {
+          console.warn("Publish warnings:", published.userErrors);
+        } else {
+          onlineStoreUrl =
+            published.publishable?.onlineStoreUrl ?? onlineStoreUrl;
+        }
       }
+    } catch (err) {
+      console.error("Publish error:", err.message);
     }
-  } catch (err) {
-    console.error("Publish error:", err.message);
   }
 
   const { variants: _v, ...productData } = createdProduct;
